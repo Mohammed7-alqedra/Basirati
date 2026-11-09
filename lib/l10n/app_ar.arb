@@ -1,0 +1,22 @@
+{
+  "@@locale": "ar",
+  "appName": "بصيرتي",
+  "settings": "الإعدادات",
+  "language": "اللغةx",
+  "cameraUnavailable": "الكاميرا غير متاحة",
+  "openAppSettings": "فتح إعدادات التطبيق",
+  "vibrationAlerts": "تنبيهات الاهتزاز",
+  "assistanceActive": "المساعدة مفعّلة",
+  "openSettingsMenu": "فتح قائمة الإعدادات",
+  "cameraPermissionDenied": "تم رفض إذن الكاميرا",
+  "microphonePermission": "يلزم منح إذن استخدام الميكروفون للأوامر الصوتية",
+  "obstacleAhead": "يوجد عائق أمامك",
+  "english": "الإنجليزية",
+  "arabic": "العربية",
+  "tryAgain": "حاول مرة أخرى",
+  "cameraPermission": "يلزم منح إذن استخدام الكاميرا",
+  "voiceAssistance": "المساعدة الصوتية",
+  "noCameraFound": "لم يتم العثور على كاميرا",
+  "settingsDescription": "إعدادات بصيرتي AI"
+
+}

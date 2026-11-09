@@ -1,0 +1,22 @@
+
+{
+  "@@locale": "en",
+  "appName": "Basirati",
+  "settings": "Settings",
+  "settingsDescription": "Basirati AI Settings",
+  "cameraPermission": "Camera permission is required",
+  "cameraPermissionDenied": "Camera permission denied",
+  "microphonePermission": "Microphone permission is required for voice commands",
+  "cameraUnavailable": "Camera unavailable",
+  "noCameraFound": "No camera was found",
+  "tryAgain": "Try Again",
+  "openSettingsMenu": "Open settings menu",
+  "openAppSettings": "Open App Settings",
+  "assistanceActive": "Assistance Active",
+  "obstacleAhead": "Obstacle ahead",
+  "voiceAssistance": "Voice Assistance",
+  "vibrationAlerts": "Vibration Alerts",
+  "language": "Language",
+  "english": "English",
+  "arabic": "Arabic"
+}
