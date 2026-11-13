@@ -61,4 +61,103 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get arabic => 'Arabic';
+
+  @override
+  String get objectPerson => 'person';
+
+  @override
+  String get objectBicycle => 'bicycle';
+
+  @override
+  String get objectCar => 'car';
+
+  @override
+  String get objectMotorcycle => 'motorcycle';
+
+  @override
+  String get objectBus => 'bus';
+
+  @override
+  String get objectTruck => 'truck';
+
+  @override
+  String get objectBench => 'bench';
+
+  @override
+  String get objectBackpack => 'backpack';
+
+  @override
+  String get objectHandbag => 'handbag';
+
+  @override
+  String get objectSuitcase => 'suitcase';
+
+  @override
+  String get objectChair => 'chair';
+
+  @override
+  String get objectCouch => 'couch';
+
+  @override
+  String get objectPottedPlant => 'potted plant';
+
+  @override
+  String get objectDiningTable => 'dining table';
+
+  @override
+  String get objectBottle => 'bottle';
+
+  @override
+  String get objectCup => 'cup';
+
+  @override
+  String get objectToilet => 'toilet';
+
+  @override
+  String get objectTv => 'TV';
+
+  @override
+  String get objectLaptop => 'laptop';
+
+  @override
+  String get objectMouse => 'mouse';
+
+  @override
+  String get objectKeyboard => 'keyboard';
+
+  @override
+  String get objectCellPhone => 'cell phone';
+
+  @override
+  String get objectMicrowave => 'microwave';
+
+  @override
+  String get objectSink => 'sink';
+
+  @override
+  String get objectRefrigerator => 'refrigerator';
+
+  @override
+  String get objectBook => 'book';
+
+  @override
+  String get objectClock => 'clock';
+
+  @override
+  String get directionLeft => 'on your left';
+
+  @override
+  String get directionRight => 'on your right';
+
+  @override
+  String get directionAhead => 'ahead';
+
+  @override
+  String get noObjectsDetected => 'I don\'t see any objects';
+
+  @override
+  String get roomNumberNotReady => 'Room number reading is not ready yet';
+
+  @override
+  String get detectionUnavailable => 'Object detection could not start. Please try again.';
 }

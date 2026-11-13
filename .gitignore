@@ -46,3 +46,10 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# Local Android SDK settings
+/android/local.properties
+
+# Local backup files
+*.backup
+*.mistake.backup

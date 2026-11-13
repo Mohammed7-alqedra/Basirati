@@ -202,6 +202,204 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Arabic'**
   String get arabic;
+
+  /// No description provided for @objectPerson.
+  ///
+  /// In en, this message translates to:
+  /// **'person'**
+  String get objectPerson;
+
+  /// No description provided for @objectBicycle.
+  ///
+  /// In en, this message translates to:
+  /// **'bicycle'**
+  String get objectBicycle;
+
+  /// No description provided for @objectCar.
+  ///
+  /// In en, this message translates to:
+  /// **'car'**
+  String get objectCar;
+
+  /// No description provided for @objectMotorcycle.
+  ///
+  /// In en, this message translates to:
+  /// **'motorcycle'**
+  String get objectMotorcycle;
+
+  /// No description provided for @objectBus.
+  ///
+  /// In en, this message translates to:
+  /// **'bus'**
+  String get objectBus;
+
+  /// No description provided for @objectTruck.
+  ///
+  /// In en, this message translates to:
+  /// **'truck'**
+  String get objectTruck;
+
+  /// No description provided for @objectBench.
+  ///
+  /// In en, this message translates to:
+  /// **'bench'**
+  String get objectBench;
+
+  /// No description provided for @objectBackpack.
+  ///
+  /// In en, this message translates to:
+  /// **'backpack'**
+  String get objectBackpack;
+
+  /// No description provided for @objectHandbag.
+  ///
+  /// In en, this message translates to:
+  /// **'handbag'**
+  String get objectHandbag;
+
+  /// No description provided for @objectSuitcase.
+  ///
+  /// In en, this message translates to:
+  /// **'suitcase'**
+  String get objectSuitcase;
+
+  /// No description provided for @objectChair.
+  ///
+  /// In en, this message translates to:
+  /// **'chair'**
+  String get objectChair;
+
+  /// No description provided for @objectCouch.
+  ///
+  /// In en, this message translates to:
+  /// **'couch'**
+  String get objectCouch;
+
+  /// No description provided for @objectPottedPlant.
+  ///
+  /// In en, this message translates to:
+  /// **'potted plant'**
+  String get objectPottedPlant;
+
+  /// No description provided for @objectDiningTable.
+  ///
+  /// In en, this message translates to:
+  /// **'dining table'**
+  String get objectDiningTable;
+
+  /// No description provided for @objectBottle.
+  ///
+  /// In en, this message translates to:
+  /// **'bottle'**
+  String get objectBottle;
+
+  /// No description provided for @objectCup.
+  ///
+  /// In en, this message translates to:
+  /// **'cup'**
+  String get objectCup;
+
+  /// No description provided for @objectToilet.
+  ///
+  /// In en, this message translates to:
+  /// **'toilet'**
+  String get objectToilet;
+
+  /// No description provided for @objectTv.
+  ///
+  /// In en, this message translates to:
+  /// **'TV'**
+  String get objectTv;
+
+  /// No description provided for @objectLaptop.
+  ///
+  /// In en, this message translates to:
+  /// **'laptop'**
+  String get objectLaptop;
+
+  /// No description provided for @objectMouse.
+  ///
+  /// In en, this message translates to:
+  /// **'mouse'**
+  String get objectMouse;
+
+  /// No description provided for @objectKeyboard.
+  ///
+  /// In en, this message translates to:
+  /// **'keyboard'**
+  String get objectKeyboard;
+
+  /// No description provided for @objectCellPhone.
+  ///
+  /// In en, this message translates to:
+  /// **'cell phone'**
+  String get objectCellPhone;
+
+  /// No description provided for @objectMicrowave.
+  ///
+  /// In en, this message translates to:
+  /// **'microwave'**
+  String get objectMicrowave;
+
+  /// No description provided for @objectSink.
+  ///
+  /// In en, this message translates to:
+  /// **'sink'**
+  String get objectSink;
+
+  /// No description provided for @objectRefrigerator.
+  ///
+  /// In en, this message translates to:
+  /// **'refrigerator'**
+  String get objectRefrigerator;
+
+  /// No description provided for @objectBook.
+  ///
+  /// In en, this message translates to:
+  /// **'book'**
+  String get objectBook;
+
+  /// No description provided for @objectClock.
+  ///
+  /// In en, this message translates to:
+  /// **'clock'**
+  String get objectClock;
+
+  /// No description provided for @directionLeft.
+  ///
+  /// In en, this message translates to:
+  /// **'on your left'**
+  String get directionLeft;
+
+  /// No description provided for @directionRight.
+  ///
+  /// In en, this message translates to:
+  /// **'on your right'**
+  String get directionRight;
+
+  /// No description provided for @directionAhead.
+  ///
+  /// In en, this message translates to:
+  /// **'ahead'**
+  String get directionAhead;
+
+  /// No description provided for @noObjectsDetected.
+  ///
+  /// In en, this message translates to:
+  /// **'I don\'t see any objects'**
+  String get noObjectsDetected;
+
+  /// No description provided for @roomNumberNotReady.
+  ///
+  /// In en, this message translates to:
+  /// **'Room number reading is not ready yet'**
+  String get roomNumberNotReady;
+
+  /// No description provided for @detectionUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Object detection could not start. Please try again.'**
+  String get detectionUnavailable;
 }
 
 class _AppLocalizationsDelegate extends LocalizationsDelegate<AppLocalizations> {
