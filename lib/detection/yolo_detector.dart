@@ -27,7 +27,9 @@ class Detection {
   });
 
   double get centerX => (left + right) / 2;
+
   double get width => right - left;
+
   double get height => bottom - top;
 
   /// Simple three-zone direction from the box center.
@@ -45,14 +47,39 @@ class YoloDetector {
   // person, bicycle, car, motorcycle, bus, truck, bench, backpack,
   // handbag, suitcase, chair, couch, potted plant, dining table
   static const Set<int> obstacleClasses = {
-    0, 1, 2, 3, 5, 7, 13, 24, 26, 28, 56, 57, 58, 60
+    0,
+    1,
+    2,
+    3,
+    5,
+    7,
+    13,
+    24,
+    26,
+    28,
+    56,
+    57,
+    58,
+    60,
   };
 
   // INFO OBJECTS – said only when the user asks "what's in front of me?":
   // bottle, cup, toilet, tv, laptop, mouse, keyboard, cell phone,
   // microwave, sink, refrigerator, book, clock
   static const Set<int> infoClasses = {
-    39, 41, 61, 62, 63, 64, 66, 67, 68, 71, 72, 73, 74
+    39,
+    41,
+    61,
+    62,
+    63,
+    64,
+    66,
+    67,
+    68,
+    71,
+    72,
+    73,
+    74,
   };
 
   final double confThreshold;
@@ -73,8 +100,10 @@ class YoloDetector {
 
   Future<void> load() async {
     final options = InterpreterOptions()..threads = 4;
-    _interpreter =
-        await Interpreter.fromAsset('assets/yolo11n.tflite', options: options);
+    _interpreter = await Interpreter.fromAsset(
+      'assets/yolo11n.tflite',
+      options: options,
+    );
 
     final labelsText = await rootBundle.loadString('assets/labels.txt');
     _labels = labelsText
@@ -92,9 +121,10 @@ class YoloDetector {
     _numChannels = _outputChannelsFirst ? outShape[1] : outShape[2];
     _numBoxes = _outputChannelsFirst ? outShape[2] : outShape[1];
 
-    _classesToCheck = {...obstacleClasses, ...infoClasses}
-        .where((c) => c < _numChannels - 4)
-        .toList();
+    _classesToCheck = {
+      ...obstacleClasses,
+      ...infoClasses,
+    }.where((c) => c < _numChannels - 4).toList();
 
     _input = Float32List(_inputSize * _inputSize * 3);
     _output = Float32List(_numChannels * _numBoxes);
@@ -103,16 +133,27 @@ class YoloDetector {
   /// Detects objects in one camera frame.
   /// [rotation] is the camera sensor orientation (usually 90 on Android phones).
   List<Detection> detect(CameraImage image, int rotation) {
+    final stopwatch = Stopwatch()..start();
+
     _fillInput(image, rotation);
     _interpreter.run(_input.buffer, _output.buffer);
-    return _nonMaxSuppression(_readCandidates());
+
+    final detections = _nonMaxSuppression(_readCandidates());
+
+    stopwatch.stop();
+
+    final ms = stopwatch.elapsedMilliseconds;
+
+    return detections;
   }
 
   // ---------- 1. Camera frame (YUV) -> model input ----------
   // Only the 320 x 320 pixels the model needs are converted, which keeps it fast.
   void _fillInput(CameraImage img, int rotation) {
     final w = img.width, h = img.height;
-    final yPlane = img.planes[0], uPlane = img.planes[1], vPlane = img.planes[2];
+    final yPlane = img.planes[0],
+        uPlane = img.planes[1],
+        vPlane = img.planes[2];
     final yRow = yPlane.bytesPerRow;
     final uRow = uPlane.bytesPerRow, vRow = vPlane.bytesPerRow;
     final uPix = uPlane.bytesPerPixel ?? 1, vPix = vPlane.bytesPerPixel ?? 1;
@@ -203,29 +244,33 @@ class YoloDetector {
         bw /= _inputSize;
         bh /= _inputSize;
       }
-      candidates.add(Detection(
-        classId: bestClass,
-        label: bestClass < _labels.length ? _labels[bestClass] : 'object',
-        score: bestScore,
-        left: cx - bw / 2,
-        top: cy - bh / 2,
-        right: cx + bw / 2,
-        bottom: cy + bh / 2,
-        isObstacle: obstacleClasses.contains(bestClass),
-      ));
+      candidates.add(
+        Detection(
+          classId: bestClass,
+          label: bestClass < _labels.length ? _labels[bestClass] : 'object',
+          score: bestScore,
+          left: cx - bw / 2,
+          top: cy - bh / 2,
+          right: cx + bw / 2,
+          bottom: cy + bh / 2,
+          isObstacle: obstacleClasses.contains(bestClass),
+        ),
+      );
     }
     return candidates;
   }
 
   // ---------- 3. Remove duplicate boxes (NMS) ----------
   List<Detection> _nonMaxSuppression(List<Detection> detections) {
-    final remaining = [...detections]..sort((a, b) => b.score.compareTo(a.score));
+    final remaining = [...detections]
+      ..sort((a, b) => b.score.compareTo(a.score));
     final kept = <Detection>[];
     while (remaining.isNotEmpty) {
       final best = remaining.removeAt(0);
       kept.add(best);
       remaining.removeWhere(
-          (d) => d.classId == best.classId && _iou(d, best) > iouThreshold);
+        (d) => d.classId == best.classId && _iou(d, best) > iouThreshold,
+      );
     }
     return kept;
   }

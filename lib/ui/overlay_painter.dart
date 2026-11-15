@@ -23,8 +23,7 @@ class OverlayPainter extends CustomPainter {
     ..style = PaintingStyle.stroke
     ..strokeWidth = 3;
 
-  static final _labelBackground = Paint()
-    ..color = const Color(0xCC0F1B3D);
+  static final _labelBackground = Paint()..color = const Color(0xCC0F1B3D);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -36,18 +35,12 @@ class OverlayPainter extends CustomPainter {
         detection.bottom * size.height,
       );
 
-      canvas.drawRect(
-        rect,
-        detection.isObstacle ? _obstaclePaint : _infoPaint,
-      );
+      canvas.drawRect(rect, detection.isObstacle ? _obstaclePaint : _infoPaint);
 
       final text = TextPainter(
         text: TextSpan(
-          text: textForDetection(detection),
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 14,
-          ),
+          text: detection.label,
+          style: const TextStyle(color: Colors.white, fontSize: 14),
         ),
         textDirection: textDirection,
       )..layout();
@@ -58,26 +51,19 @@ class OverlayPainter extends CustomPainter {
 
       final labelWidth = text.width + 10;
 
-      final left = (textDirection == TextDirection.rtl
-              ? rect.right - labelWidth
-              : rect.left)
-          .clamp(0.0, size.width)
-          .toDouble();
+      final left =
+          (textDirection == TextDirection.rtl
+                  ? rect.right - labelWidth
+                  : rect.left)
+              .clamp(0.0, size.width)
+              .toDouble();
 
       canvas.drawRect(
-        Rect.fromLTWH(
-          left,
-          top,
-          labelWidth,
-          text.height + 6,
-        ),
+        Rect.fromLTWH(left, top, labelWidth, text.height + 6),
         _labelBackground,
       );
 
-      text.paint(
-        canvas,
-        Offset(left + 5, top + 3),
-      );
+      text.paint(canvas, Offset(left + 5, top + 3));
     }
   }
 

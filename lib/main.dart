@@ -1,4 +1,3 @@
-
 import 'dart:async';
 
 import 'package:camera/camera.dart';
@@ -49,6 +48,15 @@ class _CameraScreenState extends State<CameraScreen> {
   CameraController? _controller;
 
   List<Detection> _results = [];
+
+  int _processedImages = 0;
+  int _processingMs = 0;
+  final Stopwatch _sessionTimer = Stopwatch();
+
+  double get _averageFps {
+    final seconds = _sessionTimer.elapsedMilliseconds / 1000;
+    return seconds > 0 ? _processedImages / seconds : 0;
+  }
 
   bool _loading = true;
   bool _busy = false;
@@ -104,8 +112,7 @@ class _CameraScreenState extends State<CameraScreen> {
       }
 
       final rearCamera = cameras.firstWhere(
-        (camera) =>
-            camera.lensDirection == CameraLensDirection.back,
+        (camera) => camera.lensDirection == CameraLensDirection.back,
         orElse: () => cameras.first,
       );
 
@@ -134,9 +141,9 @@ class _CameraScreenState extends State<CameraScreen> {
 
       _streamStarted = true;
 
-      await _speak(
-        AppLocalizations.of(context)!.assistanceActive,
-      );
+      if (!mounted) return;
+
+      await _speak(AppLocalizations.of(context)!.assistanceActive);
     } catch (e) {
       debugPrint('Camera or detection initialization failed: $e');
 
@@ -163,16 +170,21 @@ class _CameraScreenState extends State<CameraScreen> {
     if (_busy || _controller == null) return;
 
     _busy = true;
+    if (!_sessionTimer.isRunning) _sessionTimer.start();
 
     try {
+      final stopwatch = Stopwatch()..start();
       final detections = _detector.detect(
         image,
         _controller!.description.sensorOrientation,
       );
+      stopwatch.stop();
 
       if (mounted) {
         setState(() {
           _results = detections;
+          _processedImages++;
+          _processingMs = stopwatch.elapsedMilliseconds;
         });
       }
     } catch (e) {
@@ -193,10 +205,7 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
-  String _localizedObjectLabel(
-    Detection detection,
-    AppLocalizations l10n,
-  ) {
+  String _localizedObjectLabel(Detection detection, AppLocalizations l10n) {
     switch (detection.classId) {
       case 0:
         return l10n.objectPerson;
@@ -257,10 +266,7 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
-  String _localizedDirection(
-    String direction,
-    AppLocalizations l10n,
-  ) {
+  String _localizedDirection(String direction, AppLocalizations l10n) {
     switch (direction) {
       case 'left':
         return l10n.directionLeft;
@@ -271,10 +277,7 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
-  String _pluralizeEnglish(
-    int classId,
-    String label,
-  ) {
+  String _pluralizeEnglish(int classId, String label) {
     if (classId == 0) return 'people';
     if (classId == 64) return 'mice';
     if (classId == 62) return 'TVs';
@@ -290,15 +293,13 @@ class _CameraScreenState extends State<CameraScreen> {
     }
 
     final l10n = AppLocalizations.of(context)!;
-    final isArabic =
-        Localizations.localeOf(context).languageCode == 'ar';
+    final isArabic = Localizations.localeOf(context).languageCode == 'ar';
 
     final groups = <String, int>{};
     final objects = <String, Detection>{};
 
     for (final detection in _results) {
-      final key =
-          '${detection.classId}|${detection.direction}';
+      final key = '${detection.classId}|${detection.direction}';
 
       groups[key] = (groups[key] ?? 0) + 1;
       objects[key] = detection;
@@ -316,13 +317,10 @@ class _CameraScreenState extends State<CameraScreen> {
       final name = isArabic
           ? '$count $label'
           : count == 1
-              ? label
-              : '$count ${_pluralizeEnglish(detection.classId, label)}';
+          ? label
+          : '$count ${_pluralizeEnglish(detection.classId, label)}';
 
-      final direction = _localizedDirection(
-        detection.direction,
-        l10n,
-      );
+      final direction = _localizedDirection(detection.direction, l10n);
 
       phrases.add('$name $direction');
     }
@@ -331,15 +329,18 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   Future<void> _speak(String text) async {
+    if (!mounted) return;
+
+    final language = Localizations.localeOf(context).languageCode;
+
     try {
       await _tts.stop();
 
-      final language =
-          Localizations.localeOf(context).languageCode;
+      if (!mounted) return;
 
-      await _tts.setLanguage(
-        language == 'ar' ? 'ar' : 'en-US',
-      );
+      await _tts.setLanguage(language == 'ar' ? 'ar' : 'en-US');
+
+      if (!mounted) return;
 
       await _tts.speak(text);
     } catch (e) {
@@ -413,9 +414,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
                   Navigator.push(
                     context,
-                    MaterialPageRoute(
-                      builder: (_) => const SettingsScreen(),
-                    ),
+                    MaterialPageRoute(builder: (_) => const SettingsScreen()),
                   );
                 },
               ),
@@ -494,16 +493,42 @@ class _CameraScreenState extends State<CameraScreen> {
                 child: SafeArea(
                   child: IconButton(
                     tooltip: l10n.openSettingsMenu,
-                    icon: const Icon(
-                      Icons.menu,
-                      size: 32,
-                    ),
+                    icon: const Icon(Icons.menu, size: 32),
                     onPressed: () {
                       Scaffold.of(context).openDrawer();
                     },
                   ),
                 ),
               ),
+
+              if (controller?.value.isInitialized == true)
+                Positioned(
+                  top: 65,
+                  left: 12,
+                  right: 12,
+                  child: SafeArea(
+                    child: ExcludeSemantics(
+                      child: Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xDD0F1B3D),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Text(
+                          'Images processed: $_processedImages\n'
+                          'Elapsed time: ${(_sessionTimer.elapsedMilliseconds / 1000).toStringAsFixed(1)} s\n'
+                          'Last image: $_processingMs ms\n'
+                          'Average FPS: ${_averageFps.toStringAsFixed(1)}',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
 
               if (controller?.value.isInitialized == true)
                 Positioned(
@@ -547,13 +572,8 @@ class SettingsScreen extends StatelessWidget {
     final l10n = AppLocalizations.of(context)!;
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text(l10n.settings),
-      ),
-      body: Center(
-        child: Text(l10n.settingsDescription),
-      ),
+      appBar: AppBar(title: Text(l10n.settings)),
+      body: Center(child: Text(l10n.settingsDescription)),
     );
   }
 }
-
