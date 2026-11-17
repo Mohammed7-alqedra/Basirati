@@ -8,6 +8,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'detection/yolo_detector.dart';
+import 'depth/depth_estimator.dart';
 import 'l10n/app_localizations.dart';
 import 'ui/overlay_painter.dart';
 
@@ -43,6 +44,10 @@ class _CameraScreenState extends State<CameraScreen> {
   static const MethodChannel _keys = MethodChannel('basirati/keys');
 
   final YoloDetector _detector = YoloDetector();
+  final DepthEstimator _depth = DepthEstimator();
+  bool _depthReady = false;
+  String? _depthStatus;
+  int _depthFrame = 0;
   final FlutterTts _tts = FlutterTts();
 
   CameraController? _controller;
@@ -97,6 +102,14 @@ class _CameraScreenState extends State<CameraScreen> {
       if (!_detectorLoaded) {
         await _detector.load();
         _detectorLoaded = true;
+        try {
+          await _depth.load();
+          _depthReady = true;
+          _depthStatus = 'Distance estimates: uncalibrated test';
+        } catch (e) {
+          _depthStatus = 'Depth model missing or unavailable';
+          debugPrint('Depth load error: $e');
+        }
       }
 
       final cameras = await availableCameras();
@@ -174,10 +187,23 @@ class _CameraScreenState extends State<CameraScreen> {
 
     try {
       final stopwatch = Stopwatch()..start();
-      final detections = _detector.detect(
-        image,
-        _controller!.description.sensorOrientation,
-      );
+      final rotation = _controller!.description.sensorOrientation;
+      final detections = _detector.detect(image, rotation);
+      if (_depthReady) {
+        try {
+          if (_depthFrame % 5 == 0 || !_depth.hasDepth) {
+            _depth.update(image, rotation);
+          }
+          for (final d in detections) {
+            d.meters = _depth.metersFor(d);
+          }
+        } catch (e) {
+          _depthReady = false;
+          _depthStatus = 'Depth processing unavailable';
+          debugPrint('Depth processing error: $e');
+        }
+      }
+      _depthFrame++;
       stopwatch.stop();
 
       if (mounted) {
@@ -381,6 +407,7 @@ class _CameraScreenState extends State<CameraScreen> {
     if (_detectorLoaded) {
       _detector.close();
     }
+    _depth.close();
 
     unawaited(_tts.stop());
     unawaited(WakelockPlus.disable());
@@ -449,7 +476,10 @@ class _CameraScreenState extends State<CameraScreen> {
                                 l10n,
                               );
 
-                              return '$label · $direction';
+                              final distance = detection.meters;
+                              return distance == null
+                                  ? '$label · $direction'
+                                  : '$label · ~${distance.toStringAsFixed(1)} m (test) · $direction';
                             },
                             textDirection: Directionality.of(context),
                           ),
@@ -487,6 +517,21 @@ class _CameraScreenState extends State<CameraScreen> {
                         ),
                 ),
 
+              if (_depthStatus != null)
+                Positioned(
+                  top: 65,
+                  left: 12,
+                  right: 12,
+                  child: SafeArea(
+                    child: Text(
+                      _depthStatus!,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        backgroundColor: Color(0xCC0F1B3D),
+                      ),
+                    ),
+                  ),
+                ),
               Positioned(
                 top: 0,
                 left: 0,
