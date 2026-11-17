@@ -39,7 +39,7 @@ class OverlayPainter extends CustomPainter {
 
       final text = TextPainter(
         text: TextSpan(
-          text: detection.label,
+          text: textForDetection(detection),
           style: const TextStyle(color: Colors.white, fontSize: 14),
         ),
         textDirection: textDirection,
