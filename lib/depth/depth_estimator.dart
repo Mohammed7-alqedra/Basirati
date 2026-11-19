@@ -4,10 +4,21 @@ import 'package:camera/camera.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
 import '../detection/yolo_detector.dart';
 
-/// Prototype monocular depth. Raw model output must be calibrated against
-/// measured distances before it can be interpreted as reliable meters.
-/// Do not use this for independent navigation or obstacle safety warnings.
+/// The uploaded notebook's measurement procedure, ported from Python.
+/// Checkpoint equivalence and camera preprocessing must still be verified.
+/// Do not use this prototype for obstacle safety warnings or navigation.
+class DepthReading {
+  final double rawMeters;
+  final double correctedMeters;
+
+  const DepthReading(this.rawMeters, this.correctedMeters);
+}
+
 class DepthEstimator {
+  /// Coefficients copied exactly from Untitled11 (2).ipynb (Cell 3).
+  /// These are test values, not validated calibration for the S25 Ultra.
+  static const double slope = 0.6341037631666971;
+  static const double intercept = 0.401649701699875;
   Interpreter? _interpreter;
   late Float32List _input;
   late Float32List _output;
@@ -48,30 +59,45 @@ class DepthEstimator {
     _hasDepth = true;
   }
 
-  /// Median of central object area. Display only as uncalibrated estimate.
-  double? metersFor(Detection detection) {
-    if (!_hasDepth) return null;
-    final l = (detection.left + detection.width * 0.25 - _cropLeft) / _cropWidth;
-    final r = (detection.right - detection.width * 0.25 - _cropLeft) / _cropWidth;
-    final t = (detection.top + detection.height * 0.25 - _cropTop) / _cropHeight;
-    final b = (detection.bottom - detection.height * 0.25 - _cropTop) / _cropHeight;
-    if (r <= 0 || l >= 1 || b <= 0 || t >= 1) return null;
-    final x1 = (l.clamp(0.0, 1.0) * (_outputWidth - 1)).floor();
-    final x2 = (r.clamp(0.0, 1.0) * (_outputWidth - 1)).ceil();
-    final y1 = (t.clamp(0.0, 1.0) * (_outputHeight - 1)).floor();
-    final y2 = (b.clamp(0.0, 1.0) * (_outputHeight - 1)).ceil();
+  /// Match notebook: median of valid depth pixels in the central 60%
+  /// of a YOLO bounding box, followed by slope*raw + intercept.
+  DepthReading? readingFor(Detection detection) {
+    if (!_hasDepth || detection.width <= 0 || detection.height <= 0) {
+      return null;
+    }
+
+    const inset = 0.20;
+    // YOLO boxes refer to the full upright frame; depth uses a center crop.
+    final left = (detection.left + detection.width * inset - _cropLeft) / _cropWidth;
+    final right = (detection.right - detection.width * inset - _cropLeft) / _cropWidth;
+    final top = (detection.top + detection.height * inset - _cropTop) / _cropHeight;
+    final bottom = (detection.bottom - detection.height * inset - _cropTop) / _cropHeight;
+
+    if (right <= 0 || left >= 1 || bottom <= 0 || top >= 1) {
+      return null;
+    }
+
+    final x1 = (left.clamp(0.0, 1.0) * _outputWidth).floor();
+    final x2 = (right.clamp(0.0, 1.0) * _outputWidth).ceil();
+    final y1 = (top.clamp(0.0, 1.0) * _outputHeight).floor();
+    final y2 = (bottom.clamp(0.0, 1.0) * _outputHeight).ceil();
+    if (x1 >= x2 || y1 >= y2) return null;
+
     final values = <double>[];
-    final span = math.max(1, (x2 - x1 + 1) * (y2 - y1 + 1));
-    final step = math.max(1, math.sqrt(span / 1200).ceil());
-    for (int y = y1; y <= y2; y += step) {
-      for (int x = x1; x <= x2; x += step) {
+    for (int y = y1; y < y2; y++) {
+      for (int x = x1; x < x2; x++) {
         final value = _output[y * _outputWidth + x];
         if (value.isFinite && value > 0) values.add(value);
       }
     }
     if (values.isEmpty) return null;
+
     values.sort();
-    return values[values.length ~/ 2];
+    final raw = values.length.isOdd
+        ? values[values.length ~/ 2]
+        : (values[values.length ~/ 2 - 1] + values[values.length ~/ 2]) / 2;
+    final corrected = math.max(0.0, slope * raw + intercept);
+    return DepthReading(raw, corrected);
   }
 
   void _prepare(CameraImage image, int rotation) {
