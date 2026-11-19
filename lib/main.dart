@@ -105,7 +105,7 @@ class _CameraScreenState extends State<CameraScreen> {
         try {
           await _depth.load();
           _depthReady = true;
-          _depthStatus = 'Distance estimates: uncalibrated test';
+          _depthStatus = 'Depth notebook calibration TEST — not verified';
         } catch (e) {
           _depthStatus = 'Depth model missing or unavailable';
           debugPrint('Depth load error: $e');
@@ -195,7 +195,9 @@ class _CameraScreenState extends State<CameraScreen> {
             _depth.update(image, rotation);
           }
           for (final d in detections) {
-            d.meters = _depth.metersFor(d);
+            final reading = _depth.readingFor(d);
+            d.meters = reading?.correctedMeters;
+            d.rawMeters = reading?.rawMeters;
           }
         } catch (e) {
           _depthReady = false;
@@ -477,9 +479,13 @@ class _CameraScreenState extends State<CameraScreen> {
                               );
 
                               final distance = detection.meters;
-                              return distance == null
-                                  ? '$label · $direction'
-                                  : '$label · ~${distance.toStringAsFixed(1)} m (test) · $direction';
+                              final rawDistance = detection.rawMeters;
+                              if (distance == null || rawDistance == null) {
+                                return '$label · $direction';
+                              }
+                              return '$label · $direction\\n'
+                                  'raw ${rawDistance.toStringAsFixed(2)} m → '
+                                  'test ${distance.toStringAsFixed(2)} m';
                             },
                             textDirection: Directionality.of(context),
                           ),
@@ -546,34 +552,6 @@ class _CameraScreenState extends State<CameraScreen> {
                 ),
               ),
 
-              if (controller?.value.isInitialized == true)
-                Positioned(
-                  top: 65,
-                  left: 12,
-                  right: 12,
-                  child: SafeArea(
-                    child: ExcludeSemantics(
-                      child: Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: const Color(0xDD0F1B3D),
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: Text(
-                          'Images processed: $_processedImages\n'
-                          'Elapsed time: ${(_sessionTimer.elapsedMilliseconds / 1000).toStringAsFixed(1)} s\n'
-                          'Last image: $_processingMs ms\n'
-                          'Average FPS: ${_averageFps.toStringAsFixed(1)}',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 15,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
 
               if (controller?.value.isInitialized == true)
                 Positioned(
