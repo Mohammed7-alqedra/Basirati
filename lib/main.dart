@@ -483,7 +483,7 @@ class _CameraScreenState extends State<CameraScreen> {
                               if (distance == null || rawDistance == null) {
                                 return '$label · $direction';
                               }
-                              return '$label · $direction\\n'
+                              return '$label · $direction\n'
                                   'raw ${rawDistance.toStringAsFixed(2)} m → '
                                   'test ${distance.toStringAsFixed(2)} m';
                             },
