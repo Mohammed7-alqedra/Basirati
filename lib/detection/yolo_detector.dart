@@ -15,6 +15,7 @@ class Detection {
   /// true = obstacle (warned while walking); false = info object (said on request)
   final bool isObstacle;
   double? meters;
+  double? rawMeters;
 
   Detection({
     required this.classId,
