@@ -60,6 +60,8 @@ class _CameraScreenState extends State<CameraScreen> {
   CameraController? _controller;
 
   List<Detection> _results = [];
+  Detection? _lastMatchedDetection;
+  DateTime? _lastMatchedAt;
 
   bool _loading = true;
   bool _busy = false;
@@ -121,8 +123,8 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
-  Detection? _objectForCalibration() {
-    final visible = _results
+  Detection? _centerObjectWithDepth(List<Detection> detections) {
+    final visible = detections
         .where((d) => d.rawMeters != null &&
             d.rawMeters!.isFinite &&
             d.rawMeters! > 0)
@@ -141,6 +143,15 @@ class _CameraScreenState extends State<CameraScreen> {
     return visible.first;
   }
 
+  Detection? _objectForCalibration() {
+    if (_lastMatchedAt == null ||
+        DateTime.now().difference(_lastMatchedAt!) >
+            const Duration(seconds: 5)) {
+      return null;
+    }
+    return _lastMatchedDetection;
+  }
+
   Future<void> _captureCalibrationSample() async {
     final detection = _objectForCalibration();
     if (detection == null) {
@@ -153,7 +164,7 @@ class _CameraScreenState extends State<CameraScreen> {
     }
 
     final raw = detection.rawMeters!;
-    final input = TextEditingController();
+    String inputValue = '';
     String? error;
 
     final measured = await showDialog<double>(
@@ -175,7 +186,7 @@ class _CameraScreenState extends State<CameraScreen> {
                 ),
                 const SizedBox(height: 12),
                 TextField(
-                  controller: input,
+                  onChanged: (value) => inputValue = value,
                   keyboardType:
                       const TextInputType.numberWithOptions(decimal: true),
                   decoration: InputDecoration(
@@ -197,7 +208,7 @@ class _CameraScreenState extends State<CameraScreen> {
             FilledButton(
               onPressed: () {
                 final value =
-                    double.tryParse(input.text.trim().replaceAll(',', '.'));
+                    double.tryParse(inputValue.trim().replaceAll(',', '.'));
                 if (value == null || !value.isFinite ||
                     value <= 0 || value > 20) {
                   dialogSetState(() {
@@ -213,7 +224,6 @@ class _CameraScreenState extends State<CameraScreen> {
         ),
       ),
     );
-    input.dispose();
     if (measured == null || !mounted) return;
 
     setState(() {
@@ -433,7 +443,8 @@ class _CameraScreenState extends State<CameraScreen> {
       final detections = _detector.detect(image, rotation);
       if (_depthReady) {
         try {
-          if (_depthFrame % 5 == 0 || !_depth.hasDepth) {
+          final isMatchedFrame = _depthFrame % 5 == 0 || !_depth.hasDepth;
+          if (isMatchedFrame) {
             _depth.update(image, rotation);
           }
           for (final d in detections) {
@@ -441,8 +452,16 @@ class _CameraScreenState extends State<CameraScreen> {
             d.meters = reading?.calibratedMeters;
             d.rawMeters = reading?.rawMeters;
           }
+          // Save a sample ONLY from a frame processed by both models.
+          // Other frames may use an older depth map and must not be
+          // mixed into tape-measured calibration points.
+          if (isMatchedFrame) {
+            _lastMatchedDetection = _centerObjectWithDepth(detections);
+            _lastMatchedAt = DateTime.now();
+          }
         } catch (e) {
           _depthReady = false;
+          _lastMatchedDetection = null;
           _depthStatus = 'Depth processing unavailable';
           debugPrint('Depth processing error: $e');
         }
