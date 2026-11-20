@@ -135,18 +135,10 @@ class YoloDetector {
   /// Detects objects in one camera frame.
   /// [rotation] is the camera sensor orientation (usually 90 on Android phones).
   List<Detection> detect(CameraImage image, int rotation) {
-    final stopwatch = Stopwatch()..start();
-
     _fillInput(image, rotation);
     _interpreter.run(_input.buffer, _output.buffer);
 
-    final detections = _nonMaxSuppression(_readCandidates());
-
-    stopwatch.stop();
-
-    final ms = stopwatch.elapsedMilliseconds;
-
-    return detections;
+    return _nonMaxSuppression(_readCandidates());
   }
 
   // ---------- 1. Camera frame (YUV) -> model input ----------
