@@ -3,22 +3,23 @@ import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
 import '../detection/yolo_detector.dart';
+import 'depth_calibration.dart';
 
-/// The uploaded notebook's measurement procedure, ported from Python.
-/// Checkpoint equivalence and camera preprocessing must still be verified.
-/// Do not use this prototype for obstacle safety warnings or navigation.
+/// Metric-depth testing only. Checkpoint and preprocessing parity remain
+/// unverified; never use this estimate for obstacle safety or navigation.
 class DepthReading {
   final double rawMeters;
-  final double correctedMeters;
+  final double? calibratedMeters;
 
-  const DepthReading(this.rawMeters, this.correctedMeters);
+  const DepthReading(this.rawMeters, this.calibratedMeters);
 }
 
 class DepthEstimator {
-  /// Coefficients copied exactly from Untitled11 (2).ipynb (Cell 3).
-  /// These are test values, not validated calibration for the S25 Ultra.
-  static const double slope = 0.6341037631666971;
-  static const double intercept = 0.401649701699875;
+  DepthCalibration? _calibration;
+
+  void setCalibration(DepthCalibration? calibration) {
+    _calibration = calibration;
+  }
   Interpreter? _interpreter;
   late Float32List _input;
   late Float32List _output;
@@ -60,7 +61,7 @@ class DepthEstimator {
   }
 
   /// Match notebook: median of valid depth pixels in the central 60%
-  /// of a YOLO bounding box, followed by slope*raw + intercept.
+  /// of a YOLO bounding box, followed by fitted slope*raw + intercept if ready.
   DepthReading? readingFor(Detection detection) {
     if (!_hasDepth || detection.width <= 0 || detection.height <= 0) {
       return null;
@@ -96,8 +97,8 @@ class DepthEstimator {
     final raw = values.length.isOdd
         ? values[values.length ~/ 2]
         : (values[values.length ~/ 2 - 1] + values[values.length ~/ 2]) / 2;
-    final corrected = math.max(0.0, slope * raw + intercept);
-    return DepthReading(raw, corrected);
+    final calibrated = _calibration?.apply(raw);
+    return DepthReading(raw, calibrated);
   }
 
   void _prepare(CameraImage image, int rotation) {
