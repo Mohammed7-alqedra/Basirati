@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -6,9 +7,11 @@ import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'detection/yolo_detector.dart';
 import 'depth/depth_estimator.dart';
+import 'depth/depth_calibration.dart';
 import 'l10n/app_localizations.dart';
 import 'ui/overlay_painter.dart';
 
@@ -45,6 +48,10 @@ class _CameraScreenState extends State<CameraScreen> {
 
   final YoloDetector _detector = YoloDetector();
   final DepthEstimator _depth = DepthEstimator();
+  final SharedPreferencesAsync _preferences = SharedPreferencesAsync();
+  static const String _samplesKey = 'baseerte_depth_samples_v2';
+  final List<CalibrationSample> _samples = [];
+  bool _calibrationLoaded = false;
   bool _depthReady = false;
   String? _depthStatus;
   int _depthFrame = 0;
@@ -53,15 +60,6 @@ class _CameraScreenState extends State<CameraScreen> {
   CameraController? _controller;
 
   List<Detection> _results = [];
-
-  int _processedImages = 0;
-  int _processingMs = 0;
-  final Stopwatch _sessionTimer = Stopwatch();
-
-  double get _averageFps {
-    final seconds = _sessionTimer.elapsedMilliseconds / 1000;
-    return seconds > 0 ? _processedImages / seconds : 0;
-  }
 
   bool _loading = true;
   bool _busy = false;
@@ -81,8 +79,254 @@ class _CameraScreenState extends State<CameraScreen> {
     _initializeCameraAndDetection();
   }
 
+  void _updateCalibration() {
+    final calibration = DepthCalibration.fit(_samples);
+    _depth.setCalibration(calibration);
+    _depthStatus = calibration == null
+        ? 'Distance TEST: RAW only — add 3+ measured samples'
+        : 'Distance TEST: calibrated with ${_samples.length} samples — not verified';
+  }
+
+  Future<void> _loadCalibration() async {
+    try {
+      final stored = await _preferences.getString(_samplesKey);
+      if (stored != null) {
+        final parsed = jsonDecode(stored);
+        if (parsed is List) {
+          for (final item in parsed) {
+            final sample = CalibrationSample.fromJson(item);
+            if (sample != null) _samples.add(sample);
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Could not load distance samples: $e');
+    }
+    _updateCalibration();
+  }
+
+  Future<void> _saveCalibration() async {
+    try {
+      await _preferences.setString(
+        _samplesKey,
+        jsonEncode(_samples.map((sample) => sample.toJson()).toList()),
+      );
+    } catch (e) {
+      debugPrint('Could not save distance samples: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Distance samples could not be saved.')),
+        );
+      }
+    }
+  }
+
+  Detection? _objectForCalibration() {
+    final visible = _results
+        .where((d) => d.rawMeters != null &&
+            d.rawMeters!.isFinite &&
+            d.rawMeters! > 0)
+        .toList();
+    if (visible.isEmpty) return null;
+
+    // Prefer the object closest to the middle of the image.
+    double centerDistance(Detection d) {
+      final dx = d.centerX - 0.5;
+      final dy = (d.top + d.bottom) / 2 - 0.5;
+      return dx * dx + dy * dy;
+    }
+
+    visible.sort((a, b) =>
+        centerDistance(a).compareTo(centerDistance(b)));
+    return visible.first;
+  }
+
+  Future<void> _captureCalibrationSample() async {
+    final detection = _objectForCalibration();
+    if (detection == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text(
+          'Point at one detected object and try again.',
+        )),
+      );
+      return;
+    }
+
+    final raw = detection.rawMeters!;
+    final input = TextEditingController();
+    String? error;
+
+    final measured = await showDialog<double>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, dialogSetState) => AlertDialog(
+          title: const Text('Add distance measurement'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Detected object: ${detection.label}'),
+                Text('Raw AI depth: ${raw.toStringAsFixed(2)} m'),
+                const SizedBox(height: 12),
+                const Text(
+                  'Use a tape measure from the camera lens to this '
+                  'object. Enter its actual distance in meters.',
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: input,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  decoration: InputDecoration(
+                    labelText: 'Actual distance (m)',
+                    hintText: 'Example: 1.90',
+                    errorText: error,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text('This is experimental; do not use for navigation.'),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final value =
+                    double.tryParse(input.text.trim().replaceAll(',', '.'));
+                if (value == null || !value.isFinite ||
+                    value <= 0 || value > 20) {
+                  dialogSetState(() {
+                    error = 'Enter a distance above 0 and at most 20 meters.';
+                  });
+                  return;
+                }
+                Navigator.of(dialogContext).pop(value);
+              },
+              child: const Text('Save sample'),
+            ),
+          ],
+        ),
+      ),
+    );
+    input.dispose();
+    if (measured == null || !mounted) return;
+
+    setState(() {
+      _samples.add(CalibrationSample(
+        rawMeters: raw,
+        actualMeters: measured,
+      ));
+      _updateCalibration();
+    });
+    await _saveCalibration();
+
+    if (mounted) {
+      final calibration = DepthCalibration.fit(_samples);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(
+          calibration == null
+              ? 'Saved ${_samples.length} sample(s). '
+                'Use different measured distances (e.g. 0.5, 1, 2, 3 m).'
+              : 'Calibration fitted from ${_samples.length} samples '
+                '(TEST only). Verify using new distances.',
+        )),
+      );
+    }
+  }
+
+  Future<void> _resetCalibration() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Clear calibration?'),
+        content: const Text(
+          'This deletes all saved tape-measured samples '
+          'and returns to uncalibrated raw readings.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Clear samples'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() {
+      _samples.clear();
+      _updateCalibration();
+    });
+    await _saveCalibration();
+  }
+
+  Future<void> _showCalibrationDetails() async {
+    final fitted = DepthCalibration.fit(_samples);
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Calibration test'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Saved samples: ${_samples.length}'),
+              const SizedBox(height: 8),
+              Text(fitted == null
+                  ? 'Not calibrated. Capture at least 3 samples at '
+                    'different known distances, at least 0.5 m apart overall.'
+                  : 'Fitted formula (TEST): '
+                    '${fitted.slope.toStringAsFixed(4)} × raw + '
+                    '${fitted.intercept.toStringAsFixed(4)}'),
+              const SizedBox(height: 12),
+              for (var i = 0; i < _samples.length; i++)
+                Text(
+                  '${i + 1}. Raw ${_samples[i].rawMeters.toStringAsFixed(2)} m'
+                  ' → tape ${_samples[i].actualMeters.toStringAsFixed(2)} m',
+                ),
+              const SizedBox(height: 12),
+              const Text(
+                'Use different measured distances and retest using '
+                'distances that were NOT used for calibration. '
+                'Distance warnings remain disabled.',
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: _samples.isEmpty
+                ? null
+                : () {
+                    Navigator.of(dialogContext).pop();
+                    _resetCalibration();
+                  },
+            child: const Text('Reset'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _initializeCameraAndDetection() async {
     try {
+      if (!_calibrationLoaded) {
+        await _loadCalibration();
+        _calibrationLoaded = true;
+      }
       final cameraPermission = await Permission.camera.request();
 
       if (!mounted) return;
@@ -105,7 +349,7 @@ class _CameraScreenState extends State<CameraScreen> {
         try {
           await _depth.load();
           _depthReady = true;
-          _depthStatus = 'Depth notebook calibration TEST — not verified';
+          _updateCalibration();
         } catch (e) {
           _depthStatus = 'Depth model missing or unavailable';
           debugPrint('Depth load error: $e');
@@ -183,10 +427,8 @@ class _CameraScreenState extends State<CameraScreen> {
     if (_busy || _controller == null) return;
 
     _busy = true;
-    if (!_sessionTimer.isRunning) _sessionTimer.start();
 
     try {
-      final stopwatch = Stopwatch()..start();
       final rotation = _controller!.description.sensorOrientation;
       final detections = _detector.detect(image, rotation);
       if (_depthReady) {
@@ -196,7 +438,7 @@ class _CameraScreenState extends State<CameraScreen> {
           }
           for (final d in detections) {
             final reading = _depth.readingFor(d);
-            d.meters = reading?.correctedMeters;
+            d.meters = reading?.calibratedMeters;
             d.rawMeters = reading?.rawMeters;
           }
         } catch (e) {
@@ -206,13 +448,10 @@ class _CameraScreenState extends State<CameraScreen> {
         }
       }
       _depthFrame++;
-      stopwatch.stop();
 
       if (mounted) {
         setState(() {
           _results = detections;
-          _processedImages++;
-          _processingMs = stopwatch.elapsedMilliseconds;
         });
       }
     } catch (e) {
@@ -480,12 +719,17 @@ class _CameraScreenState extends State<CameraScreen> {
 
                               final distance = detection.meters;
                               final rawDistance = detection.rawMeters;
-                              if (distance == null || rawDistance == null) {
+                              if (rawDistance == null) {
                                 return '$label · $direction';
+                              }
+                              if (distance == null) {
+                                return '$label · $direction\n'
+                                    'raw ${rawDistance.toStringAsFixed(2)} m '
+                                    '(uncalibrated)';
                               }
                               return '$label · $direction\n'
                                   'raw ${rawDistance.toStringAsFixed(2)} m → '
-                                  'test ${distance.toStringAsFixed(2)} m';
+                                  'calibrated ${distance.toStringAsFixed(2)} m (test)';
                             },
                             textDirection: Directionality.of(context),
                           ),
@@ -535,6 +779,31 @@ class _CameraScreenState extends State<CameraScreen> {
                         color: Colors.white,
                         backgroundColor: Color(0xCC0F1B3D),
                       ),
+                    ),
+                  ),
+                ),
+              if (controller?.value.isInitialized == true && _depthReady)
+                Positioned(
+                  left: 12,
+                  right: 12,
+                  bottom: 8,
+                  child: SafeArea(
+                    top: false,
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: FilledButton.icon(
+                            onPressed: _captureCalibrationSample,
+                            icon: const Icon(Icons.add),
+                            label: const Text('Add measured distance'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        OutlinedButton(
+                          onPressed: _showCalibrationDetails,
+                          child: Text('Samples (${_samples.length})'),
+                        ),
+                      ],
                     ),
                   ),
                 ),
