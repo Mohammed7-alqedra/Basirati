@@ -1,579 +1,241 @@
-import 'dart:async';
-
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+import 'detection/stairs_detector.dart';
 import 'detection/yolo_detector.dart';
-import 'l10n/app_localizations.dart';
 import 'ui/overlay_painter.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const BaseerteApp());
+  await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  runApp(const BasiratiApp());
 }
 
-class BaseerteApp extends StatelessWidget {
-  const BaseerteApp({super.key});
+class BasiratiApp extends StatelessWidget {
+  const BasiratiApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
+    return const MaterialApp(
+      title: 'Basirati AI',
       debugShowCheckedModeBanner: false,
-      onGenerateTitle: (context) => AppLocalizations.of(context)!.appName,
-      localizationsDelegates: AppLocalizations.localizationsDelegates,
-      supportedLocales: AppLocalizations.supportedLocales,
-      theme: ThemeData.dark(),
-      home: const CameraScreen(),
+      home: DetectionScreen(),
     );
   }
 }
 
-class CameraScreen extends StatefulWidget {
-  const CameraScreen({super.key});
+/// Opens the camera automatically and runs object detection on the live stream.
+/// Phase 1: boxes are drawn for team testing.
+/// Long-press Volume Up: says which objects are in front. No on-screen buttons:
+/// the app is used exactly like a blind user would use it.
+class DetectionScreen extends StatefulWidget {
+  const DetectionScreen({super.key});
 
   @override
-  State<CameraScreen> createState() => _CameraScreenState();
+  State<DetectionScreen> createState() => _DetectionScreenState();
 }
 
-class _CameraScreenState extends State<CameraScreen> {
-  static const MethodChannel _keys = MethodChannel('basirati/keys');
+class _DetectionScreenState extends State<DetectionScreen> {
+  // Volume keys come from android/.../MainActivity.kt through this channel.
+  static const _keys = MethodChannel('basirati/keys');
 
-  final YoloDetector _detector = YoloDetector();
-  final FlutterTts _tts = FlutterTts();
-
+  final _detector = YoloDetector();
+  final _tts = FlutterTts();
   CameraController? _controller;
-
   List<Detection> _results = [];
-
-  int _processedImages = 0;
-  int _processingMs = 0;
-  final Stopwatch _sessionTimer = Stopwatch();
-
-  double get _averageFps {
-    final seconds = _sessionTimer.elapsedMilliseconds / 1000;
-    return seconds > 0 ? _processedImages / seconds : 0;
-  }
-
-  bool _loading = true;
   bool _busy = false;
-  bool _detectorLoaded = false;
-  bool _streamStarted = false;
+  String _status = 'Starting camera…';
 
-  String? _error;
+  // ---------- Stairs (added) ----------
+  final _stairs = StairsDetector();
+  final _stairsAlert = StairsAlert();
+  bool _stairsReady = false;
+  int _frameCount = 0;
+  List<Detection> _stairsResults = [];
 
   @override
   void initState() {
     super.initState();
-
-    unawaited(WakelockPlus.enable());
-
+    WakelockPlus.enable(); // keep the screen on, or the camera stops
     _keys.setMethodCallHandler(_onKey);
-
-    _initializeCameraAndDetection();
+    _start();
   }
 
-  Future<void> _initializeCameraAndDetection() async {
+  Future<void> _start() async {
     try {
-      final cameraPermission = await Permission.camera.request();
-
-      if (!mounted) return;
-
-      if (!cameraPermission.isGranted) {
-        setState(() {
-          _error = 'CAMERA_PERMISSION_DENIED';
-          _loading = false;
-        });
-        return;
+      await _detector.load();
+      // Stairs model: if it fails to load, the rest of the app keeps working.
+      try {
+        await _stairs.load();
+        _stairsReady = true;
+      } catch (e) {
+        debugPrint('Stairs model not loaded: $e');
       }
-
-      await Permission.microphone.request();
-
-      if (!mounted) return;
-
-      if (!_detectorLoaded) {
-        await _detector.load();
-        _detectorLoaded = true;
-      }
+      await _tts.setLanguage('en-US');
 
       final cameras = await availableCameras();
-
-      if (!mounted) return;
-
-      if (cameras.isEmpty) {
-        setState(() {
-          _error = 'NO_CAMERA_FOUND';
-          _loading = false;
-        });
-        return;
-      }
-
-      final rearCamera = cameras.firstWhere(
-        (camera) => camera.lensDirection == CameraLensDirection.back,
+      final back = cameras.firstWhere(
+        (c) => c.lensDirection == CameraLensDirection.back,
         orElse: () => cameras.first,
       );
-
-      final cameraController = CameraController(
-        rearCamera,
+      // The camera plugin asks for the camera permission here (first time only).
+      final controller = CameraController(
+        back,
         ResolutionPreset.medium,
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.yuv420,
       );
-
-      await cameraController.initialize();
-
-      if (!mounted) {
-        await cameraController.dispose();
-        return;
-      }
-
-      _controller = cameraController;
-
-      setState(() {
-        _loading = false;
-        _error = null;
-      });
-
-      await cameraController.startImageStream(_onFrame);
-
-      _streamStarted = true;
-
+      await controller.initialize();
       if (!mounted) return;
-
-      await _speak(AppLocalizations.of(context)!.assistanceActive);
+      setState(() {
+        _controller = controller;
+        _status = 'Started';
+      });
+      await controller.startImageStream(_onFrame);
+      _speak('Started');
     } catch (e) {
-      debugPrint('Camera or detection initialization failed: $e');
-
-      final failedController = _controller;
-      _controller = null;
-      _streamStarted = false;
-
-      if (failedController != null) {
-        unawaited(failedController.dispose());
-      }
-
-      if (!mounted) return;
-
-      setState(() {
-        _error = _detectorLoaded
-            ? 'CAMERA_UNAVAILABLE'
-            : 'DETECTION_UNAVAILABLE';
-        _loading = false;
-      });
+      if (mounted) setState(() => _status = 'Error: $e');
     }
   }
 
   void _onFrame(CameraImage image) {
+    // Skip frames while the model is busy, so we always use a recent frame.
     if (_busy || _controller == null) return;
-
     _busy = true;
-    if (!_sessionTimer.isRunning) _sessionTimer.start();
-
+    final start = DateTime.now();
     try {
-      final stopwatch = Stopwatch()..start();
-      final detections = _detector.detect(
-        image,
-        _controller!.description.sensorOrientation,
-      );
-      stopwatch.stop();
-
+      final results =
+          _detector.detect(image, _controller!.description.sensorOrientation);
+      _checkStairs(image);
+      final ms = DateTime.now().difference(start).inMilliseconds;
+      final fps = ms > 0 ? 1000 ~/ ms : 0;
       if (mounted) {
         setState(() {
-          _results = detections;
-          _processedImages++;
-          _processingMs = stopwatch.elapsedMilliseconds;
+          _results = results;
+          _status = '${results.length} objects · $ms ms per frame (about $fps FPS)';
         });
       }
     } catch (e) {
-      debugPrint('YOLO detection error: $e');
+      if (mounted) setState(() => _status = 'Detection error: $e');
     } finally {
       _busy = false;
     }
   }
 
+  /// Stairs model runs on every 3rd frame (stairs don't move).
+  /// Any error turns the stairs check off; the rest of the app keeps working.
+  void _checkStairs(CameraImage image) {
+    if (!_stairsReady) return;
+    _frameCount++;
+    if (_frameCount % 3 != 1) return;
+    try {
+      _stairsResults =
+          _stairs.detect(image, _controller!.description.sensorOrientation);
+      final message = _stairsAlert.update(_stairsResults, DateTime.now());
+      if (message != null) _speak(message);
+    } catch (e) {
+      _stairsReady = false;
+      _stairsResults = [];
+      debugPrint('Stairs model error: $e');
+    }
+  }
+
+  // ---------- Volume keys ----------
   Future<void> _onKey(MethodCall call) async {
-    if (!mounted) return;
-
     if (call.method == 'volumeUpLong') {
-      await _describeObjects();
+      _describeObjects();
     } else if (call.method == 'volumeUpShort') {
-      final l10n = AppLocalizations.of(context)!;
-      await _speak(l10n.roomNumberNotReady);
+      _speak('Room number reading is not ready yet');
     }
   }
 
-  String _localizedObjectLabel(Detection detection, AppLocalizations l10n) {
-    switch (detection.classId) {
-      case 0:
-        return l10n.objectPerson;
-      case 1:
-        return l10n.objectBicycle;
-      case 2:
-        return l10n.objectCar;
-      case 3:
-        return l10n.objectMotorcycle;
-      case 5:
-        return l10n.objectBus;
-      case 7:
-        return l10n.objectTruck;
-      case 13:
-        return l10n.objectBench;
-      case 24:
-        return l10n.objectBackpack;
-      case 26:
-        return l10n.objectHandbag;
-      case 28:
-        return l10n.objectSuitcase;
-      case 39:
-        return l10n.objectBottle;
-      case 41:
-        return l10n.objectCup;
-      case 56:
-        return l10n.objectChair;
-      case 57:
-        return l10n.objectCouch;
-      case 58:
-        return l10n.objectPottedPlant;
-      case 60:
-        return l10n.objectDiningTable;
-      case 61:
-        return l10n.objectToilet;
-      case 62:
-        return l10n.objectTv;
-      case 63:
-        return l10n.objectLaptop;
-      case 64:
-        return l10n.objectMouse;
-      case 66:
-        return l10n.objectKeyboard;
-      case 67:
-        return l10n.objectCellPhone;
-      case 68:
-        return l10n.objectMicrowave;
-      case 71:
-        return l10n.objectSink;
-      case 72:
-        return l10n.objectRefrigerator;
-      case 73:
-        return l10n.objectBook;
-      case 74:
-        return l10n.objectClock;
-      default:
-        return l10n.noObjectsDetected;
-    }
-  }
-
-  String _localizedDirection(String direction, AppLocalizations l10n) {
-    switch (direction) {
-      case 'left':
-        return l10n.directionLeft;
-      case 'right':
-        return l10n.directionRight;
-      default:
-        return l10n.directionAhead;
-    }
-  }
-
-  String _pluralizeEnglish(int classId, String label) {
-    if (classId == 0) return 'people';
-    if (classId == 64) return 'mice';
-    if (classId == 62) return 'TVs';
-
-    return '${label}s';
-  }
-
-  Future<void> _describeObjects() async {
-    if (_results.isEmpty) {
-      final l10n = AppLocalizations.of(context)!;
-      await _speak(l10n.noObjectsDetected);
+  /// Says every object currently seen, grouped by name and direction.
+  void _describeObjects() {
+    final results = _results;
+    if (results.isEmpty) {
+      _speak("I don't see any objects");
       return;
     }
-
-    final l10n = AppLocalizations.of(context)!;
-    final isArabic = Localizations.localeOf(context).languageCode == 'ar';
-
     final groups = <String, int>{};
-    final objects = <String, Detection>{};
-
-    for (final detection in _results) {
-      final key = '${detection.classId}|${detection.direction}';
-
+    for (final d in results) {
+      final key = '${d.label}|${d.direction}';
       groups[key] = (groups[key] ?? 0) + 1;
-      objects[key] = detection;
     }
-
-    final phrases = <String>[];
-
-    for (final entry in groups.entries) {
-      final detection = objects[entry.key]!;
-
-      final label = _localizedObjectLabel(detection, l10n);
-
-      final count = entry.value;
-
-      final name = isArabic
-          ? '$count $label'
-          : count == 1
-          ? label
-          : '$count ${_pluralizeEnglish(detection.classId, label)}';
-
-      final direction = _localizedDirection(detection.direction, l10n);
-
-      phrases.add('$name $direction');
-    }
-
-    await _speak(phrases.join(', '));
+    final phrases = groups.entries.map((e) {
+      final parts = e.key.split('|');
+      final label = parts[0], direction = parts[1];
+      final plural = label == 'person' ? 'people' : '${label}s';
+      final name = e.value > 1 ? '${e.value} $plural' : label;
+      final where = direction == 'left'
+          ? 'on your left'
+          : direction == 'right'
+              ? 'on your right'
+              : 'ahead';
+      return '$name $where';
+    });
+    _speak(phrases.join(', '));
   }
 
   Future<void> _speak(String text) async {
-    if (!mounted) return;
-
-    final language = Localizations.localeOf(context).languageCode;
-
-    try {
-      await _tts.stop();
-
-      if (!mounted) return;
-
-      await _tts.setLanguage(language == 'ar' ? 'ar' : 'en-US');
-
-      if (!mounted) return;
-
-      await _tts.speak(text);
-    } catch (e) {
-      debugPrint('Text to speech error: $e');
-    }
-  }
-
-  String _getErrorMessage(AppLocalizations l10n) {
-    switch (_error) {
-      case 'CAMERA_PERMISSION_DENIED':
-        return l10n.cameraPermissionDenied;
-
-      case 'NO_CAMERA_FOUND':
-        return l10n.noCameraFound;
-
-      case 'DETECTION_UNAVAILABLE':
-        return l10n.detectionUnavailable;
-
-      default:
-        return l10n.cameraUnavailable;
-    }
+    await _tts.stop();
+    await _tts.speak(text);
   }
 
   @override
   void dispose() {
-    _keys.setMethodCallHandler(null);
-
-    final controller = _controller;
-
-    if (controller != null) {
-      if (_streamStarted) {
-        unawaited(controller.stopImageStream());
-      }
-
-      unawaited(controller.dispose());
-    }
-
-    if (_detectorLoaded) {
-      _detector.close();
-    }
-
-    unawaited(_tts.stop());
-    unawaited(WakelockPlus.disable());
-
+    _controller?.stopImageStream();
+    _controller?.dispose();
+    _detector.close();
+    _stairs.close();
+    _tts.stop();
+    WakelockPlus.disable();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final l10n = AppLocalizations.of(context)!;
-    final controller = _controller;
-
+    final c = _controller;
     return Scaffold(
-      drawer: Drawer(
-        child: SafeArea(
-          child: ListView(
-            children: [
-              DrawerHeader(
-                child: Center(
-                  child: Text(
-                    l10n.appName,
-                    style: const TextStyle(fontSize: 26),
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: Stack(
+          children: [
+            if (c != null && c.value.isInitialized)
+              Center(
+                child: AspectRatio(
+                  aspectRatio: 1 / c.value.aspectRatio,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      CameraPreview(c),
+                      CustomPaint(painter: OverlayPainter(_results)),
+                      CustomPaint(painter: OverlayPainter(_stairsResults)),
+                    ],
                   ),
                 ),
               ),
-              ListTile(
-                leading: const Icon(Icons.settings),
-                title: Text(l10n.settings),
-                onTap: () {
-                  Navigator.pop(context);
-
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const SettingsScreen()),
-                  );
-                },
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: Container(
+                color: const Color(0xCC0F1B3D),
+                padding: const EdgeInsets.all(12),
+                // Hidden from TalkBack: it changes many times per second (team info only).
+                child: ExcludeSemantics(
+                  child: Text(
+                    _status,
+                    style: const TextStyle(color: Colors.white, fontSize: 16),
+                  ),
+                ),
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
-      body: Builder(
-        builder: (context) {
-          return Stack(
-            fit: StackFit.expand,
-            children: [
-              if (controller?.value.isInitialized == true)
-                Center(
-                  child: AspectRatio(
-                    aspectRatio: 1 / controller!.value.aspectRatio,
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        CameraPreview(controller),
-                        CustomPaint(
-                          painter: OverlayPainter(
-                            _results,
-                            textForDetection: (detection) {
-                              final label = _localizedObjectLabel(
-                                detection,
-                                l10n,
-                              );
-
-                              final direction = _localizedDirection(
-                                detection.direction,
-                                l10n,
-                              );
-
-                              return '$label · $direction';
-                            },
-                            textDirection: Directionality.of(context),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                )
-              else
-                Center(
-                  child: _loading
-                      ? const CircularProgressIndicator()
-                      : Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Padding(
-                              padding: const EdgeInsets.all(16),
-                              child: Text(
-                                _getErrorMessage(l10n),
-                                textAlign: TextAlign.center,
-                              ),
-                            ),
-                            ElevatedButton(
-                              onPressed: () {
-                                setState(() {
-                                  _loading = true;
-                                  _error = null;
-                                });
-
-                                _initializeCameraAndDetection();
-                              },
-                              child: Text(l10n.tryAgain),
-                            ),
-                          ],
-                        ),
-                ),
-
-              Positioned(
-                top: 0,
-                left: 0,
-                child: SafeArea(
-                  child: IconButton(
-                    tooltip: l10n.openSettingsMenu,
-                    icon: const Icon(Icons.menu, size: 32),
-                    onPressed: () {
-                      Scaffold.of(context).openDrawer();
-                    },
-                  ),
-                ),
-              ),
-
-              if (controller?.value.isInitialized == true)
-                Positioned(
-                  top: 65,
-                  left: 12,
-                  right: 12,
-                  child: SafeArea(
-                    child: ExcludeSemantics(
-                      child: Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: const Color(0xDD0F1B3D),
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: Text(
-                          'Images processed: $_processedImages\n'
-                          'Elapsed time: ${(_sessionTimer.elapsedMilliseconds / 1000).toStringAsFixed(1)} s\n'
-                          'Last image: $_processingMs ms\n'
-                          'Average FPS: ${_averageFps.toStringAsFixed(1)}',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 15,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-
-              if (controller?.value.isInitialized == true)
-                Positioned(
-                  top: 8,
-                  right: 12,
-                  child: SafeArea(
-                    child: ExcludeSemantics(
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 8,
-                        ),
-                        decoration: BoxDecoration(
-                          color: const Color(0xCC0F1B3D),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Text(
-                          l10n.assistanceActive,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 14,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-            ],
-          );
-        },
-      ),
-    );
-  }
-}
-
-class SettingsScreen extends StatelessWidget {
-  const SettingsScreen({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    final l10n = AppLocalizations.of(context)!;
-
-    return Scaffold(
-      appBar: AppBar(title: Text(l10n.settings)),
-      body: Center(child: Text(l10n.settingsDescription)),
     );
   }
 }
