@@ -1,239 +1,299 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
+
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:flutter_tts/flutter_tts.dart';
-import 'package:wakelock_plus/wakelock_plus.dart';
-
-import 'detection/stairs_detector.dart';
-import 'detection/yolo_detector.dart';
-import 'ui/overlay_painter.dart';
+import 'package:http/http.dart' as http;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   runApp(const BasiratiApp());
 }
 
+/// Camera client for the Python API in Maya alsuos.ipynb.
+/// No AI model is executed on the Android device.
 class BasiratiApp extends StatelessWidget {
   const BasiratiApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(
-      title: 'Basirati AI',
+    return MaterialApp(
+      title: 'Basirati notebook AI',
       debugShowCheckedModeBanner: false,
-      home: DetectionScreen(),
+      theme: ThemeData.dark(),
+      home: const NotebookCameraScreen(),
     );
   }
 }
 
-/// Opens the camera automatically and runs object detection on the live stream.
-/// Phase 1: boxes are drawn for team testing.
-/// Long-press Volume Up: says which objects are in front. No on-screen buttons:
-/// the app is used exactly like a blind user would use it.
-class DetectionScreen extends StatefulWidget {
-  const DetectionScreen({super.key});
+class NotebookCameraScreen extends StatefulWidget {
+  const NotebookCameraScreen({super.key});
 
   @override
-  State<DetectionScreen> createState() => _DetectionScreenState();
+  State<NotebookCameraScreen> createState() => _NotebookCameraScreenState();
 }
 
-class _DetectionScreenState extends State<DetectionScreen> {
-  // Volume keys come from android/.../MainActivity.kt through this channel.
-  static const _keys = MethodChannel('basirati/keys');
+class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
+  final _urlController = TextEditingController();
+  final _client = http.Client();
 
-  final _detector = YoloDetector();
-  final _tts = FlutterTts();
-  CameraController? _controller;
-  List<Detection> _results = [];
-  bool _busy = false;
-  String _status = 'Starting camera…';
+  CameraController? _camera;
+  Timer? _timer;
+  Uint8List? _annotatedFrame;
+  List<String> _objects = <String>[];
+  String? _baseUrl;
+  String _status = 'Run the Colab notebook and paste its public HTTPS URL.';
+  bool _connecting = false;
+  bool _processing = false;
+  int _session = 0;
 
-  // ---------- Stairs (added) ----------
-  final _stairs = StairsDetector();
-  final _stairsAlert = StairsAlert();
-  bool _stairsReady = false;
-  int _frameCount = 0;
-  List<Detection> _stairsResults = [];
+  Future<void> _connect() async {
+    if (_connecting || _camera != null) return;
 
-  @override
-  void initState() {
-    super.initState();
-    WakelockPlus.enable(); // keep the screen on, or the camera stops
-    _keys.setMethodCallHandler(_onKey);
-    _start();
-  }
+    final base = _urlController.text.trim().replaceAll(RegExp(r'/+$'), '');
+    final uri = Uri.tryParse(base);
+    if (uri == null || uri.scheme != 'https' || uri.host.isEmpty) {
+      setState(() => _status = 'Enter a valid HTTPS notebook URL.');
+      return;
+    }
 
-  Future<void> _start() async {
+    setState(() {
+      _connecting = true;
+      _status = 'Connecting to notebook...';
+    });
+
+    CameraController? newCamera;
     try {
-      await _detector.load();
-      // Stairs model: if it fails to load, the rest of the app keeps working.
-      try {
-        await _stairs.load();
-        _stairsReady = true;
-      } catch (e) {
-        debugPrint('Stairs model not loaded: $e');
+      final response = await _client
+          .get(Uri.parse(base + '/health'))
+          .timeout(const Duration(seconds: 12));
+      if (response.statusCode != 200) {
+        throw StateError('API health check returned ' +
+            response.statusCode.toString());
       }
-      await _tts.setLanguage('en-US');
 
       final cameras = await availableCameras();
-      final back = cameras.firstWhere(
+      if (cameras.isEmpty) throw StateError('No camera available');
+      final rear = cameras.firstWhere(
         (c) => c.lensDirection == CameraLensDirection.back,
         orElse: () => cameras.first,
       );
-      // The camera plugin asks for the camera permission here (first time only).
-      final controller = CameraController(
-        back,
+
+      newCamera = CameraController(
+        rear,
         ResolutionPreset.medium,
         enableAudio: false,
-        imageFormatGroup: ImageFormatGroup.yuv420,
       );
-      await controller.initialize();
-      if (!mounted) return;
-      setState(() {
-        _controller = controller;
-        _status = 'Started';
-      });
-      await controller.startImageStream(_onFrame);
-      _speak('Started');
-    } catch (e) {
-      if (mounted) setState(() => _status = 'Error: $e');
-    }
-  }
-
-  void _onFrame(CameraImage image) {
-    // Skip frames while the model is busy, so we always use a recent frame.
-    if (_busy || _controller == null) return;
-    _busy = true;
-    final start = DateTime.now();
-    try {
-      final results =
-          _detector.detect(image, _controller!.description.sensorOrientation);
-      _checkStairs(image);
-      final ms = DateTime.now().difference(start).inMilliseconds;
-      final fps = ms > 0 ? 1000 ~/ ms : 0;
-      if (mounted) {
-        setState(() {
-          _results = results;
-          _status = '${results.length} objects · $ms ms per frame (about $fps FPS)';
-        });
+      await newCamera.initialize();
+      if (!mounted) {
+        await newCamera.dispose();
+        return;
       }
-    } catch (e) {
-      if (mounted) setState(() => _status = 'Detection error: $e');
+
+      final session = ++_session;
+      setState(() {
+        _camera = newCamera;
+        _baseUrl = base;
+        _annotatedFrame = null;
+        _objects = <String>[];
+        _status = 'Connected to the notebook model server.';
+      });
+
+      _timer?.cancel();
+      _timer = Timer.periodic(
+        const Duration(milliseconds: 1500),
+        (_) => unawaited(_sendFrame(session)),
+      );
+      unawaited(_sendFrame(session));
+    } catch (error) {
+      if (newCamera != null && !identical(newCamera, _camera)) {
+        await newCamera.dispose();
+      }
+      if (mounted) setState(() => _status = 'Connection error: ' + error.toString());
     } finally {
-      _busy = false;
+      if (mounted) setState(() => _connecting = false);
     }
   }
 
-  /// Stairs model runs on every 3rd frame (stairs don't move).
-  /// Any error turns the stairs check off; the rest of the app keeps working.
-  void _checkStairs(CameraImage image) {
-    if (!_stairsReady) return;
-    _frameCount++;
-    if (_frameCount % 3 != 1) return;
-    try {
-      _stairsResults =
-          _stairs.detect(image, _controller!.description.sensorOrientation);
-      final message = _stairsAlert.update(_stairsResults, DateTime.now());
-      if (message != null) _speak(message);
-    } catch (e) {
-      _stairsReady = false;
-      _stairsResults = [];
-      debugPrint('Stairs model error: $e');
-    }
-  }
-
-  // ---------- Volume keys ----------
-  Future<void> _onKey(MethodCall call) async {
-    if (call.method == 'volumeUpLong') {
-      _describeObjects();
-    } else if (call.method == 'volumeUpShort') {
-      _speak('Room number reading is not ready yet');
-    }
-  }
-
-  /// Says every object currently seen, grouped by name and direction.
-  void _describeObjects() {
-    final results = _results;
-    if (results.isEmpty) {
-      _speak("I don't see any objects");
+  Future<void> _sendFrame(int session) async {
+    final camera = _camera;
+    final base = _baseUrl;
+    if (_processing || !mounted || session != _session ||
+        camera == null || base == null ||
+        !camera.value.isInitialized || camera.value.isTakingPicture) {
       return;
     }
-    final groups = <String, int>{};
-    for (final d in results) {
-      final key = '${d.label}|${d.direction}';
-      groups[key] = (groups[key] ?? 0) + 1;
+
+    _processing = true;
+    try {
+      final photo = await camera.takePicture();
+      late final Uint8List bytes;
+      try {
+        bytes = await photo.readAsBytes();
+      } finally {
+        try {
+          await File(photo.path).delete();
+        } catch (_) {}
+      }
+      if (!mounted || session != _session) return;
+
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse(base + '/process-frame'),
+      );
+      request.files.add(http.MultipartFile.fromBytes(
+        'file',
+        bytes,
+        filename: 'camera.jpg',
+      ));
+
+      final streamed = await _client.send(request)
+          .timeout(const Duration(seconds: 25));
+      final response = await http.Response.fromStream(streamed);
+      if (response.statusCode != 200) {
+        throw StateError('API returned HTTP ' + response.statusCode.toString());
+      }
+
+      final result = jsonDecode(response.body) as Map<String, dynamic>;
+      if (result['status'] == 'dropped') return;
+      if (result['status'] != 'processed') {
+        throw StateError('Unexpected notebook API response');
+      }
+
+      final objects = <String>[];
+      final detections = result['detections'];
+      if (detections is List) {
+        for (final entry in detections) {
+          if (entry is! Map) continue;
+          final name = entry['object']?.toString() ?? 'object';
+          final value = entry['calibrated_distance_m'];
+          final distance = value is num
+              ? value.toStringAsFixed(2) + ' m (test)'
+              : 'distance unavailable';
+          objects.add(name + ' - ' + distance);
+        }
+      }
+
+      final jpg = result['output_frame'];
+      final annotated = jpg is String ? base64Decode(jpg) : null;
+      if (!mounted || session != _session) return;
+
+      setState(() {
+        _objects = objects;
+        _annotatedFrame = annotated;
+        final seconds = result['processing_time'];
+        _status = 'Notebook processed frame' +
+            (seconds is num ? ' in ' + seconds.toStringAsFixed(2) + ' s' : '') +
+            '. Distance is experimental.';
+      });
+    } catch (error) {
+      if (mounted && session == _session) {
+        setState(() => _status = 'Frame error: ' + error.toString());
+      }
+    } finally {
+      _processing = false;
     }
-    final phrases = groups.entries.map((e) {
-      final parts = e.key.split('|');
-      final label = parts[0], direction = parts[1];
-      final plural = label == 'person' ? 'people' : '${label}s';
-      final name = e.value > 1 ? '${e.value} $plural' : label;
-      final where = direction == 'left'
-          ? 'on your left'
-          : direction == 'right'
-              ? 'on your right'
-              : 'ahead';
-      return '$name $where';
-    });
-    _speak(phrases.join(', '));
   }
 
-  Future<void> _speak(String text) async {
-    await _tts.stop();
-    await _tts.speak(text);
+  Future<void> _disconnect() async {
+    ++_session;
+    _timer?.cancel();
+    _timer = null;
+    final previous = _camera;
+    if (mounted) {
+      setState(() {
+        _camera = null;
+        _baseUrl = null;
+        _annotatedFrame = null;
+        _objects = <String>[];
+        _status = 'Disconnected. Reconnect with the current Colab URL.';
+      });
+    }
+    await previous?.dispose();
   }
 
   @override
   void dispose() {
-    _controller?.stopImageStream();
-    _controller?.dispose();
-    _detector.close();
-    _stairs.close();
-    _tts.stop();
-    WakelockPlus.disable();
+    ++_session;
+    _timer?.cancel();
+    _client.close();
+    _urlController.dispose();
+    final camera = _camera;
+    if (camera != null) unawaited(camera.dispose());
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final c = _controller;
+    final camera = _camera;
     return Scaffold(
-      backgroundColor: Colors.black,
+      appBar: AppBar(title: const Text('Basirati notebook AI')),
       body: SafeArea(
-        child: Stack(
-          children: [
-            if (c != null && c.value.isInitialized)
-              Center(
-                child: AspectRatio(
-                  aspectRatio: 1 / c.value.aspectRatio,
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      CameraPreview(c),
-                      CustomPaint(painter: OverlayPainter(_results)),
-                      CustomPaint(painter: OverlayPainter(_stairsResults)),
-                    ],
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (camera == null) ...[
+                const Text('Run Maya alsuos.ipynb in Colab. '
+                    'Copy the API PUBLIC URL from the last cell.'),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _urlController,
+                  keyboardType: TextInputType.url,
+                  autocorrect: false,
+                  decoration: const InputDecoration(
+                    labelText: 'Notebook server URL',
+                    hintText: 'https://example.trycloudflare.com',
+                    border: OutlineInputBorder(),
                   ),
                 ),
-              ),
-            Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              child: Container(
-                color: const Color(0xCC0F1B3D),
-                padding: const EdgeInsets.all(12),
-                // Hidden from TalkBack: it changes many times per second (team info only).
-                child: ExcludeSemantics(
-                  child: Text(
-                    _status,
-                    style: const TextStyle(color: Colors.white, fontSize: 16),
+                const SizedBox(height: 12),
+                FilledButton(
+                  onPressed: _connecting ? null : _connect,
+                  child: Text(_connecting
+                      ? 'Connecting...' : 'Connect to notebook'),
+                ),
+              ] else ...[
+                Expanded(
+                  flex: 3,
+                  child: Center(
+                    child: _annotatedFrame != null
+                        ? Image.memory(
+                            _annotatedFrame!,
+                            fit: BoxFit.contain,
+                            gaplessPlayback: true,
+                          )
+                        : CameraPreview(camera),
                   ),
                 ),
+                const SizedBox(height: 8),
+                Text('Notebook detections:',
+                    style: Theme.of(context).textTheme.titleMedium),
+                Expanded(
+                  child: ListView(
+                    children: _objects.isEmpty
+                        ? [const Text('No objects reported yet')]
+                        : _objects.map((name) => Text(name)).toList(),
+                  ),
+                ),
+                OutlinedButton(
+                  onPressed: _disconnect,
+                  child: const Text('Disconnect'),
+                ),
+              ],
+              const SizedBox(height: 8),
+              Text(_status),
+              const SizedBox(height: 4),
+              const Text(
+                'Photos are uploaded to the notebook server. '
+                'Do not use experimental distances for safe navigation.',
+                style: TextStyle(fontSize: 12),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
