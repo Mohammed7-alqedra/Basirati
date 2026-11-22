@@ -67,11 +67,10 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
     CameraController? newCamera;
     try {
       final response = await _client
-          .get(Uri.parse(base + '/health'))
+          .get(Uri.parse('$base/health'))
           .timeout(const Duration(seconds: 12));
       if (response.statusCode != 200) {
-        throw StateError('API health check returned ' +
-            response.statusCode.toString());
+        throw StateError('API health check returned ${response.statusCode}');
       }
 
       final cameras = await availableCameras();
@@ -111,7 +110,7 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
       if (newCamera != null && !identical(newCamera, _camera)) {
         await newCamera.dispose();
       }
-      if (mounted) setState(() => _status = 'Connection error: ' + error.toString());
+      if (mounted) setState(() => _status = 'Connection error: $error');
     } finally {
       if (mounted) setState(() => _connecting = false);
     }
@@ -141,7 +140,7 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
 
       final request = http.MultipartRequest(
         'POST',
-        Uri.parse(base + '/process-frame'),
+        Uri.parse('$base/process-frame'),
       );
       request.files.add(http.MultipartFile.fromBytes(
         'file',
@@ -153,7 +152,7 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
           .timeout(const Duration(seconds: 25));
       final response = await http.Response.fromStream(streamed);
       if (response.statusCode != 200) {
-        throw StateError('API returned HTTP ' + response.statusCode.toString());
+        throw StateError('API returned HTTP ${response.statusCode}');
       }
 
       final result = jsonDecode(response.body) as Map<String, dynamic>;
@@ -170,9 +169,9 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
           final name = entry['object']?.toString() ?? 'object';
           final value = entry['calibrated_distance_m'];
           final distance = value is num
-              ? value.toStringAsFixed(2) + ' m (test)'
+              ? '${value.toStringAsFixed(2)} m (test)'
               : 'distance unavailable';
-          objects.add(name + ' - ' + distance);
+          objects.add('$name - $distance');
         }
       }
 
@@ -184,13 +183,15 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
         _objects = objects;
         _annotatedFrame = annotated;
         final seconds = result['processing_time'];
-        _status = 'Notebook processed frame' +
-            (seconds is num ? ' in ' + seconds.toStringAsFixed(2) + ' s' : '') +
-            '. Distance is experimental.';
+        final timing = seconds is num
+            ? ' in ${seconds.toStringAsFixed(2)} s'
+            : '';
+        _status = 'Notebook processed frame$timing. '
+            'Distance is experimental.';
       });
     } catch (error) {
       if (mounted && session == _session) {
-        setState(() => _status = 'Frame error: ' + error.toString());
+        setState(() => _status = 'Frame error: $error');
       }
     } finally {
       _processing = false;
