@@ -141,7 +141,9 @@ class OfflineMayaPipeline {
     required int cropSize,
   }) {
     if (depth.length != width * height || normalizedBox.width <= 0 ||
-        normalizedBox.height <= 0) return null;
+        normalizedBox.height <= 0) {
+      return null;
+    }
 
     final l = (normalizedBox.left + normalizedBox.width * boxInset) * imageWidth;
     final r = (normalizedBox.right - normalizedBox.width * boxInset) * imageWidth;
