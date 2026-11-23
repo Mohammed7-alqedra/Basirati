@@ -12,7 +12,7 @@ Future<void> main() async {
   runApp(const BasiratiApp());
 }
 
-/// Camera client for the Python API in Maya alsuos.ipynb.
+/// Phone camera client for Maya's models hosted on a persistent HTTPS server.
 /// No AI model is executed on the Android device.
 class BasiratiApp extends StatelessWidget {
   const BasiratiApp({super.key});
@@ -20,7 +20,7 @@ class BasiratiApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Basirati notebook AI',
+      title: 'Basirati AI',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark(),
       home: const NotebookCameraScreen(),
@@ -37,6 +37,7 @@ class NotebookCameraScreen extends StatefulWidget {
 
 class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
   final _urlController = TextEditingController();
+  final _apiKeyController = TextEditingController();
   final _client = http.Client();
 
   CameraController? _camera;
@@ -44,10 +45,19 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
   Uint8List? _annotatedFrame;
   List<String> _objects = <String>[];
   String? _baseUrl;
-  String _status = 'Run the Colab notebook and paste its public HTTPS URL.';
+  String _status = 'Connect to the hosted AI server. No Colab is required.';
   bool _connecting = false;
   bool _processing = false;
   int _session = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    // Set BASIRATI_API_URL at build time for a fixed server URL.
+    // Never embed a shared secret in the APK.
+    const fixedUrl = String.fromEnvironment('BASIRATI_API_URL');
+    if (fixedUrl.isNotEmpty) _urlController.text = fixedUrl;
+  }
 
   Future<void> _connect() async {
     if (_connecting || _camera != null) return;
@@ -55,13 +65,13 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
     final base = _urlController.text.trim().replaceAll(RegExp(r'/+$'), '');
     final uri = Uri.tryParse(base);
     if (uri == null || uri.scheme != 'https' || uri.host.isEmpty) {
-      setState(() => _status = 'Enter a valid HTTPS notebook URL.');
+      setState(() => _status = 'Enter a valid HTTPS AI server URL.');
       return;
     }
 
     setState(() {
       _connecting = true;
-      _status = 'Connecting to notebook...';
+      _status = 'Connecting to AI server...';
     });
 
     CameraController? newCamera;
@@ -97,7 +107,7 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
         _baseUrl = base;
         _annotatedFrame = null;
         _objects = <String>[];
-        _status = 'Connected to the notebook model server.';
+        _status = 'Connected to the hosted AI server.';
       });
 
       _timer?.cancel();
@@ -142,6 +152,8 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
         'POST',
         Uri.parse('$base/process-frame'),
       );
+      final apiKey = _apiKeyController.text.trim();
+      if (apiKey.isNotEmpty) request.headers['X-API-Key'] = apiKey;
       request.files.add(http.MultipartFile.fromBytes(
         'file',
         bytes,
@@ -158,7 +170,7 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
       final result = jsonDecode(response.body) as Map<String, dynamic>;
       if (result['status'] == 'dropped') return;
       if (result['status'] != 'processed') {
-        throw StateError('Unexpected notebook API response');
+        throw StateError('Unexpected AI server response');
       }
 
       final objects = <String>[];
@@ -186,7 +198,7 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
         final timing = seconds is num
             ? ' in ${seconds.toStringAsFixed(2)} s'
             : '';
-        _status = 'Notebook processed frame$timing. '
+        _status = 'AI server processed frame$timing. '
             'Distance is experimental.';
       });
     } catch (error) {
@@ -209,7 +221,7 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
         _baseUrl = null;
         _annotatedFrame = null;
         _objects = <String>[];
-        _status = 'Disconnected. Reconnect with the current Colab URL.';
+        _status = 'Disconnected. Reconnect to the AI server.';
       });
     }
     await previous?.dispose();
@@ -221,6 +233,7 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
     _timer?.cancel();
     _client.close();
     _urlController.dispose();
+    _apiKeyController.dispose();
     final camera = _camera;
     if (camera != null) unawaited(camera.dispose());
     super.dispose();
@@ -230,7 +243,7 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
   Widget build(BuildContext context) {
     final camera = _camera;
     return Scaffold(
-      appBar: AppBar(title: const Text('Basirati notebook AI')),
+      appBar: AppBar(title: const Text('Basirati AI')),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -238,16 +251,26 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               if (camera == null) ...[
-                const Text('Run Maya alsuos.ipynb in Colab. '
-                    'Copy the API PUBLIC URL from the last cell.'),
+                const Text('Connect to the hosted YOLO26n + Depth Anything V2 service. '
+                    'No laptop or Colab is needed.'),
                 const SizedBox(height: 12),
                 TextField(
                   controller: _urlController,
                   keyboardType: TextInputType.url,
                   autocorrect: false,
                   decoration: const InputDecoration(
-                    labelText: 'Notebook server URL',
-                    hintText: 'https://example.trycloudflare.com',
+                    labelText: 'AI server URL',
+                    hintText: 'https://your-server.example.com',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _apiKeyController,
+                  obscureText: true,
+                  autocorrect: false,
+                  decoration: const InputDecoration(
+                    labelText: 'Server access key (for testing)',
                     border: OutlineInputBorder(),
                   ),
                 ),
@@ -255,7 +278,7 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
                 FilledButton(
                   onPressed: _connecting ? null : _connect,
                   child: Text(_connecting
-                      ? 'Connecting...' : 'Connect to notebook'),
+                      ? 'Connecting...' : 'Connect to server'),
                 ),
               ] else ...[
                 Expanded(
@@ -271,7 +294,7 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                Text('Notebook detections:',
+                Text('AI server detections:',
                     style: Theme.of(context).textTheme.titleMedium),
                 Expanded(
                   child: ListView(
@@ -289,7 +312,7 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
               Text(_status),
               const SizedBox(height: 4),
               const Text(
-                'Photos are uploaded to the notebook server. '
+                'Camera frames are uploaded securely over HTTPS to the AI server. '
                 'Do not use experimental distances for safe navigation.',
                 style: TextStyle(fontSize: 12),
               ),
