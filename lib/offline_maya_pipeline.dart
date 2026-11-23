@@ -31,7 +31,7 @@ class OfflineMayaPipeline {
       depth = await Interpreter.fromFile(
         // The depth TFLite export must match the notebook's Hypersim Small weights.
         // It is downloaded separately and saved for offline operation.
-        FileModel(depthModelPath).file,
+        File(depthModelPath),
         options: InterpreterOptions()..threads = 2,
       );
 
@@ -148,10 +148,10 @@ class OfflineMayaPipeline {
     final t = (normalizedBox.top + normalizedBox.height * boxInset) * imageHeight;
     final b = (normalizedBox.bottom - normalizedBox.height * boxInset) * imageHeight;
 
-    final x1 = (((l - cropX) / cropSize) * width).floor().clamp(0, width);
-    final x2 = (((r - cropX) / cropSize) * width).ceil().clamp(0, width);
-    final y1 = (((t - cropY) / cropSize) * height).floor().clamp(0, height);
-    final y2 = (((b - cropY) / cropSize) * height).ceil().clamp(0, height);
+    final x1 = (((l - cropX) / cropSize) * width).floor().clamp(0, width).toInt();
+    final x2 = (((r - cropX) / cropSize) * width).ceil().clamp(0, width).toInt();
+    final y1 = (((t - cropY) / cropSize) * height).floor().clamp(0, height).toInt();
+    final y2 = (((b - cropY) / cropSize) * height).ceil().clamp(0, height).toInt();
     if (x2 <= x1 || y2 <= y1) return null;
     final valid = <double>[];
     for (var y = y1; y < y2; y++) {
@@ -190,11 +190,4 @@ class MayaFrame {
   final int width;
   final int height;
   final List<MayaObject> objects;
-}
-
-/// Minimal wrapper to keep the model file path typed at the Flutter boundary.
-/// This is NOT another model.
-class FileModel {
-  FileModel(String path) : file = File(path);
-  final File file;
 }
