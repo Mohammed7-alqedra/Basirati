@@ -349,8 +349,8 @@ class _ObjectBoxesPainter extends CustomPainter {
         textDirection: TextDirection.ltr,
       )..layout(maxWidth: size.width);
       painter.paint(canvas, Offset(
-        rect.left.clamp(0.0, size.width),
-        (rect.top - painter.height).clamp(0.0, size.height),
+        rect.left.clamp(0.0, size.width).toDouble(),
+        (rect.top - painter.height).clamp(0.0, size.height).toDouble(),
       ));
     }
   }
