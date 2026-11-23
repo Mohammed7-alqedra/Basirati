@@ -1,296 +1,314 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
+import 'dart:math' as math;
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
+
+import 'offline_maya_pipeline.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const BasiratiApp());
 }
 
-/// Camera client for the Python API in Maya alsuos.ipynb.
-/// No AI model is executed on the Android device.
 class BasiratiApp extends StatelessWidget {
   const BasiratiApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Basirati notebook AI',
+      title: 'Basirati - Offline Maya Models',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark(),
-      home: const NotebookCameraScreen(),
+      home: const OfflineCameraScreen(),
     );
   }
 }
 
-class NotebookCameraScreen extends StatefulWidget {
-  const NotebookCameraScreen({super.key});
+class OfflineCameraScreen extends StatefulWidget {
+  const OfflineCameraScreen({super.key});
 
   @override
-  State<NotebookCameraScreen> createState() => _NotebookCameraScreenState();
+  State<OfflineCameraScreen> createState() => _OfflineCameraScreenState();
 }
 
-class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
-  final _urlController = TextEditingController();
-  final _client = http.Client();
+class _OfflineCameraScreenState extends State<OfflineCameraScreen> {
+  static const _depthUrl =
+      'https://huggingface.co/litert-community/'
+      'Depth-Anything-V2-Metric-Hypersim-Small/resolve/main/'
+      'Depth-Anything-V2-Metric-Hypersim-Small-fp32.tflite';
 
   CameraController? _camera;
+  OfflineMayaPipeline? _pipeline;
   Timer? _timer;
-  Uint8List? _annotatedFrame;
-  List<String> _objects = <String>[];
-  String? _baseUrl;
-  String _status = 'Run the Colab notebook and paste its public HTTPS URL.';
-  bool _connecting = false;
+  MayaFrame? _result;
+  bool _initializing = false;
   bool _processing = false;
   int _session = 0;
+  String _status = 'Prepare models once with Wi-Fi before going to university.';
 
-  Future<void> _connect() async {
-    if (_connecting || _camera != null) return;
+  Future<File> _cachedDepthFile() async {
+    final root = await getApplicationSupportDirectory();
+    final folder = Directory('${root.path}/models');
+    await folder.create(recursive: true);
+    return File('${folder.path}/maya_hypersim_small.tflite');
+  }
 
-    final base = _urlController.text.trim().replaceAll(RegExp(r'/+$'), '');
-    final uri = Uri.tryParse(base);
-    if (uri == null || uri.scheme != 'https' || uri.host.isEmpty) {
-      setState(() => _status = 'Enter a valid HTTPS notebook URL.');
-      return;
+  Future<File> _obtainDepthFile() async {
+    final file = await _cachedDepthFile();
+    // Do not trust a tiny HTML response or Git-LFS pointer as a model.
+    if (await file.exists() && await file.length() >= 90000000) {
+      return file;
     }
 
+    final partial = File('${file.path}.download');
+    final client = HttpClient();
+    try {
+      if (mounted) {
+        setState(() => _status =
+            'Downloading Maya Depth Anything V2 (~99 MB). Wi-Fi is needed once.');
+      }
+      final request = await client.getUrl(Uri.parse(_depthUrl));
+      final response = await request.close();
+      if (response.statusCode != HttpStatus.ok) {
+        throw HttpException('Depth model download returned HTTP ${response.statusCode}');
+      }
+      if (await partial.exists()) await partial.delete();
+      final writer = partial.openWrite();
+      await writer.addStream(response);
+      await writer.flush();
+      await writer.close();
+
+      if (await partial.length() < 90000000) {
+        throw StateError('Downloaded file is too small to be the expected model.');
+      }
+      // A TFLite FlatBuffer has the TFL3 identifier at byte offsets 4..7.
+      final header = await partial.open();
+      try {
+        await header.setPosition(4);
+        final bytes = await header.read(4);
+        if (String.fromCharCodes(bytes) != 'TFL3') {
+          throw StateError('Downloaded file is not a TFLite model.');
+        }
+      } finally {
+        await header.close();
+      }
+      if (await file.exists()) await file.delete();
+      return await partial.rename(file.path);
+    } catch (_) {
+      if (await partial.exists()) await partial.delete();
+      rethrow;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  Future<void> _start() async {
+    if (_initializing || _pipeline != null) return;
     setState(() {
-      _connecting = true;
-      _status = 'Connecting to notebook...';
+      _initializing = true;
+      _status = 'Preparing models for offline use...';
     });
 
-    CameraController? newCamera;
+    OfflineMayaPipeline? pipeline;
+    CameraController? camera;
     try {
-      final response = await _client
-          .get(Uri.parse('$base/health'))
-          .timeout(const Duration(seconds: 12));
-      if (response.statusCode != 200) {
-        throw StateError('API health check returned ${response.statusCode}');
+      final modelFile = await _obtainDepthFile();
+      if (mounted) {
+        setState(() => _status =
+            'Loading YOLO26n and Depth Anything. First setup may need internet.');
       }
+      pipeline = await OfflineMayaPipeline.load(modelFile.path);
 
       final cameras = await availableCameras();
       if (cameras.isEmpty) throw StateError('No camera available');
-      final rear = cameras.firstWhere(
+      final backCamera = cameras.firstWhere(
         (c) => c.lensDirection == CameraLensDirection.back,
         orElse: () => cameras.first,
       );
-
-      newCamera = CameraController(
-        rear,
+      camera = CameraController(
+        backCamera,
         ResolutionPreset.medium,
         enableAudio: false,
       );
-      await newCamera.initialize();
+      await camera.initialize();
       if (!mounted) {
-        await newCamera.dispose();
+        await camera.dispose();
+        await pipeline.close();
         return;
       }
 
       final session = ++_session;
       setState(() {
-        _camera = newCamera;
-        _baseUrl = base;
-        _annotatedFrame = null;
-        _objects = <String>[];
-        _status = 'Connected to the notebook model server.';
+        _pipeline = pipeline;
+        _camera = camera;
+        _result = null;
+        _status = 'Both models loaded locally. Colab is NOT needed.';
       });
-
       _timer?.cancel();
       _timer = Timer.periodic(
-        const Duration(milliseconds: 1500),
-        (_) => unawaited(_sendFrame(session)),
+        const Duration(seconds: 3),
+        (_) => unawaited(_processCameraFrame(session)),
       );
-      unawaited(_sendFrame(session));
+      unawaited(_processCameraFrame(session));
     } catch (error) {
-      if (newCamera != null && !identical(newCamera, _camera)) {
-        await newCamera.dispose();
+      if (camera != null && !identical(camera, _camera)) {
+        await camera.dispose();
       }
-      if (mounted) setState(() => _status = 'Connection error: $error');
+      if (pipeline != null && !identical(pipeline, _pipeline)) {
+        await pipeline.close();
+      }
+      if (mounted) setState(() => _status = 'Setup failed: $error');
     } finally {
-      if (mounted) setState(() => _connecting = false);
+      if (mounted) setState(() => _initializing = false);
     }
   }
 
-  Future<void> _sendFrame(int session) async {
+  Future<void> _processCameraFrame(int session) async {
     final camera = _camera;
-    final base = _baseUrl;
+    final pipeline = _pipeline;
     if (_processing || !mounted || session != _session ||
-        camera == null || base == null ||
-        !camera.value.isInitialized || camera.value.isTakingPicture) {
-      return;
-    }
+        camera == null || pipeline == null ||
+        !camera.value.isInitialized || camera.value.isTakingPicture) return;
 
     _processing = true;
     try {
       final photo = await camera.takePicture();
-      late final Uint8List bytes;
+      final bytes = await photo.readAsBytes();
       try {
-        bytes = await photo.readAsBytes();
-      } finally {
-        try {
-          await File(photo.path).delete();
-        } catch (_) {}
-      }
+        await File(photo.path).delete();
+      } catch (_) {}
+
       if (!mounted || session != _session) return;
-
-      final request = http.MultipartRequest(
-        'POST',
-        Uri.parse('$base/process-frame'),
-      );
-      request.files.add(http.MultipartFile.fromBytes(
-        'file',
-        bytes,
-        filename: 'camera.jpg',
-      ));
-
-      final streamed = await _client.send(request)
-          .timeout(const Duration(seconds: 25));
-      final response = await http.Response.fromStream(streamed);
-      if (response.statusCode != 200) {
-        throw StateError('API returned HTTP ${response.statusCode}');
-      }
-
-      final result = jsonDecode(response.body) as Map<String, dynamic>;
-      if (result['status'] == 'dropped') return;
-      if (result['status'] != 'processed') {
-        throw StateError('Unexpected notebook API response');
-      }
-
-      final objects = <String>[];
-      final detections = result['detections'];
-      if (detections is List) {
-        for (final entry in detections) {
-          if (entry is! Map) continue;
-          final name = entry['object']?.toString() ?? 'object';
-          final value = entry['calibrated_distance_m'];
-          final distance = value is num
-              ? '${value.toStringAsFixed(2)} m (test)'
-              : 'distance unavailable';
-          objects.add('$name - $distance');
-        }
-      }
-
-      final jpg = result['output_frame'];
-      final annotated = jpg is String ? base64Decode(jpg) : null;
+      final next = await pipeline.process(bytes);
       if (!mounted || session != _session) return;
 
       setState(() {
-        _objects = objects;
-        _annotatedFrame = annotated;
-        final seconds = result['processing_time'];
-        final timing = seconds is num
-            ? ' in ${seconds.toStringAsFixed(2)} s'
-            : '';
-        _status = 'Notebook processed frame$timing. '
-            'Distance is experimental.';
+        _result = next;
+        _status = 'Offline inference: ${next.objects.length} objects detected. '
+            'Distances are experimental.';
       });
     } catch (error) {
       if (mounted && session == _session) {
-        setState(() => _status = 'Frame error: $error');
+        setState(() => _status = 'Processing failed: $error');
       }
     } finally {
       _processing = false;
     }
   }
 
-  Future<void> _disconnect() async {
+  Future<void> _stop() async {
     ++_session;
     _timer?.cancel();
     _timer = null;
-    final previous = _camera;
-    if (mounted) {
-      setState(() {
-        _camera = null;
-        _baseUrl = null;
-        _annotatedFrame = null;
-        _objects = <String>[];
-        _status = 'Disconnected. Reconnect with the current Colab URL.';
-      });
-    }
-    await previous?.dispose();
+    final oldCamera = _camera;
+    final oldPipeline = _pipeline;
+    setState(() {
+      _camera = null;
+      _pipeline = null;
+      _result = null;
+      _status = 'Stopped. Models remain on the phone for next time.';
+    });
+    await oldCamera?.dispose();
+    await oldPipeline?.close();
   }
 
   @override
   void dispose() {
     ++_session;
     _timer?.cancel();
-    _client.close();
-    _urlController.dispose();
     final camera = _camera;
+    final pipeline = _pipeline;
     if (camera != null) unawaited(camera.dispose());
+    if (pipeline != null) unawaited(pipeline.close());
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final result = _result;
     final camera = _camera;
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Basirati notebook AI')),
+      appBar: AppBar(title: const Text('Basirati - Offline Models')),
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(12),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               if (camera == null) ...[
-                const Text('Run Maya alsuos.ipynb in Colab. '
-                    'Copy the API PUBLIC URL from the last cell.'),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _urlController,
-                  keyboardType: TextInputType.url,
-                  autocorrect: false,
-                  decoration: const InputDecoration(
-                    labelText: 'Notebook server URL',
-                    hintText: 'https://example.trycloudflare.com',
-                    border: OutlineInputBorder(),
-                  ),
+                const Text(
+                  'YOLO26n + Depth Anything V2 Metric Hypersim Small. '
+                  'Prepare once on Wi-Fi, then test in airplane mode.',
                 ),
                 const SizedBox(height: 12),
                 FilledButton(
-                  onPressed: _connecting ? null : _connect,
-                  child: Text(_connecting
-                      ? 'Connecting...' : 'Connect to notebook'),
+                  onPressed: _initializing ? null : _start,
+                  child: Text(_initializing
+                      ? 'Preparing the offline models...'
+                      : 'Prepare / Start offline models'),
                 ),
               ] else ...[
                 Expanded(
                   flex: 3,
-                  child: Center(
-                    child: _annotatedFrame != null
-                        ? Image.memory(
-                            _annotatedFrame!,
-                            fit: BoxFit.contain,
-                            gaplessPlayback: true,
-                          )
-                        : CameraPreview(camera),
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      if (result == null) {
+                        return Center(child: CameraPreview(camera));
+                      }
+                      final scale = math.min(
+                        constraints.maxWidth / result.width,
+                        constraints.maxHeight / result.height,
+                      );
+                      return Center(
+                        child: SizedBox(
+                          width: result.width * scale,
+                          height: result.height * scale,
+                          child: Stack(
+                            children: [
+                              Positioned.fill(
+                                child: Image.memory(
+                                  result.jpeg,
+                                  fit: BoxFit.fill,
+                                  gaplessPlayback: true,
+                                ),
+                              ),
+                              Positioned.fill(
+                                child: CustomPaint(
+                                  painter: _ObjectBoxesPainter(result.objects),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
                   ),
                 ),
                 const SizedBox(height: 8),
-                Text('Notebook detections:',
+                Text('Detected objects and approximate distances',
                     style: Theme.of(context).textTheme.titleMedium),
                 Expanded(
                   child: ListView(
-                    children: _objects.isEmpty
-                        ? [const Text('No objects reported yet')]
-                        : _objects.map((name) => Text(name)).toList(),
+                    children: (result?.objects ?? const <MayaObject>[]).map((d) {
+                      final distance = d.estimatedMeters == null
+                          ? 'distance unavailable'
+                          : '${d.estimatedMeters!.toStringAsFixed(2)} m (test)';
+                      return Text('${d.name}: $distance');
+                    }).toList(),
                   ),
                 ),
-                OutlinedButton(
-                  onPressed: _disconnect,
-                  child: const Text('Disconnect'),
-                ),
+                OutlinedButton(onPressed: _stop, child: const Text('Stop camera')),
               ],
               const SizedBox(height: 8),
               Text(_status),
-              const SizedBox(height: 4),
+              const SizedBox(height: 8),
               const Text(
-                'Photos are uploaded to the notebook server. '
-                'Do not use experimental distances for safe navigation.',
+                'No Colab or server connection. Test distance accuracy against '
+                'measured objects; never rely on these readings for safe navigation.',
                 style: TextStyle(fontSize: 12),
               ),
             ],
@@ -299,4 +317,44 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
       ),
     );
   }
+}
+
+class _ObjectBoxesPainter extends CustomPainter {
+  const _ObjectBoxesPainter(this.objects);
+
+  final List<MayaObject> objects;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final pen = Paint()
+      ..color = Colors.greenAccent
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke;
+
+    for (final d in objects) {
+      final box = d.box;
+      final rect = Rect.fromLTRB(
+        box.left * size.width, box.top * size.height,
+        box.right * size.width, box.bottom * size.height,
+      );
+      canvas.drawRect(rect, pen);
+      final distance = d.estimatedMeters;
+      final label = distance == null
+          ? d.name
+          : '${d.name} ${distance.toStringAsFixed(2)}m';
+      final painter = TextPainter(
+        text: TextSpan(text: label,
+            style: const TextStyle(color: Colors.greenAccent,
+                fontSize: 13, backgroundColor: Colors.black87)),
+        textDirection: TextDirection.ltr,
+      )..layout(maxWidth: size.width);
+      painter.paint(canvas, Offset(
+        rect.left.clamp(0.0, size.width),
+        (rect.top - painter.height).clamp(0.0, size.height),
+      ));
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ObjectBoxesPainter old) => old.objects != objects;
 }
