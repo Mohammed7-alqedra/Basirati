@@ -53,3 +53,6 @@ app.*.map.json
 # Local backup files
 *.backup
 *.mistake.backup
+
+# Large bundled AI model binaries: download locally before building.
+/assets/models/*.tflite

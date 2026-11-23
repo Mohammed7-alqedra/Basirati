@@ -1,64 +1,95 @@
-# Basirati AI — offline version of Maya's notebook
+# Basirati AI — bundled models, no server
 
-This experimental Android version uses **the models in `Maya alsuos.ipynb`**,
-running on the phone instead of in Google Colab:
+This Android branch embeds **both** of Maya's AI models in the application
+package. The phone does all inference; nothing is uploaded to a server.
 
-1. **YOLO26n** for object detection, via Ultralytics' official Flutter LiteRT plugin.
-2. **Depth Anything V2 Metric Hypersim Small** for per-pixel metric indoor
-   depth, via the LiteRT/TFLite export of the *same pretrained Hypersim Small
-   checkpoint* found at
-   https://huggingface.co/litert-community/Depth-Anything-V2-Metric-Hypersim-Small
+- **YOLO26n** detects objects using the Ultralytics Android LiteRT
+  `yolo26n_w8a32.tflite` export.
+- **Depth Anything V2 Metric Hypersim Small** estimates depth with the
+  `Depth-Anything-V2-Metric-Hypersim-Small-fp32.tflite` Android model
+  derived from the notebook's indoor metric checkpoint.
 
-The notebook's distance postprocessing is retained:
-- Read the median of positive finite depths in the central 60% of a detected
-  object's bounding box.
-- Apply `max(0, 1.05 * raw_depth - 0.10)` to get an experimental estimate.
+The original notebook is retained in the repository but is **not** executed
+by the Android app. The older YOLO11n or stair-detection models are not used.
 
-**The notebook contains two separate AI models**, not one combined model.
-The old YOLO11n and stairs detector are **not** used by this branch.
-No Colab, public API, server, or cloud inference is used.
+## One-time development setup (Windows PowerShell)
 
-## First use — prepare before university
+**Important: model binaries are not checked into GitHub.** They are large
+binary assets and must be placed in the project *before building the APK*.
+The included PowerShell script downloads them to your local project's
+`assets/models/` directory, validates their binary headers, and keeps them
+as APK assets. This is a **development-time download only**; end users do not
+download models, and the Android app requires no internet.
 
-1. Connect the Android phone to **Wi-Fi**, with approximately 200 MB free
-   storage for models and installation overhead.
-2. In Android Studio, switch to `feature/maya-models-offline`.
-3. Run `flutter pub get`, `flutter analyze`, `flutter test`, then
-   `flutter run` (use `flutter run --profile` for realistic performance).
-4. Tap **Prepare / Start offline models**. Wait for the 99 MB metric-depth
-   download and the YOLO26n model initialization/download to finish.
-5. Verify that the screen says **Both models loaded locally** and reports
-   object detections and approximate distances.
-6. Close the app, enable **Airplane mode**, reopen the app, tap **Prepare /
-   Start offline models**, and verify that detection continues. Do this
-   **before** relying on the university demo. Do not clear the app's storage.
+From the repository root:
 
-On later launches, downloaded model files are cached inside the phone.
-Android OS and app data deletion may remove them; reinstallations can
-require a fresh download. First-time setup requires internet, but
-**no Colab session is needed at any time**.
+```powershell
+git switch feature/maya-models-offline
+git pull --ff-only origin feature/maya-models-offline
+.\tool\download_models.ps1
+flutter pub get
+flutter analyze
+flutter test
+flutter run --profile
+```
 
-## Current limitations
+If your PowerShell execution policy prevents running the script, run it for
+this invocation using:
 
-- **This branch is a prototype and has not been compiled or tested on a
-  physical Android device.** It must not be advertised as a finished offline
-  implementation until Flutter builds and phone tests pass.
-- The mobile depth export accepts a fixed 518x518 **center crop**. The
-  notebook's Python `infer_image` uses aspect-preserving resizing of the
-  full image. This can change results, and objects outside the center crop
-  have no depth estimate. We have *not* established numerical parity with
-  the notebook.
-- Object detection and depth estimate must be checked against real, tape-
-  measured reference distances in the actual university environment.
-  The notebook's 1.05 scale and -0.10 offset are not validated for your
-  phone. **Do not use estimated distances for navigation or obstacle safety.**
-- This prototype takes one camera JPEG at a time (starting about every 3s,
-  skipping overlapping work), not guaranteed real-time video. Heavy model
-  computation may temporarily affect responsiveness.
-- Ultralytics model downloads use its official model cache; depth uses app
-  support storage. If either download fails, retry while connected to Wi-Fi.
-- Confirm the licenses and redistribution requirements of the model and
-  Ultralytics Flutter plugin before publication.
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tool\download_models.ps1
+```
 
-The original notebook remains in the repository. The prior Colab-based app
-is available on the unchanged `main` branch until this is tested.
+It downloads:
+- `assets/models/yolo26n_w8a32.tflite` (~2.9 MB), pinned to the official
+  Ultralytics Flutter v0.7.0 detection release.
+- `assets/models/depth_anything_v2_metric_hypersim_small.tflite`
+  (~99 MB), the Hypersim Small **metric** depth export.
+
+The files must be genuine TFLite models, **not** Git LFS pointer files.
+`pubspec.yaml` references them explicitly: Flutter cannot produce a
+working APK unless both are present.
+
+After installation, turn on Airplane Mode and test again. Users of the
+installed APK need no Colab, hosted GPU, laptop, model download, or API key.
+
+## How inference works
+
+One camera image is captured about every three seconds, then both model
+outputs are combined:
+
+1. YOLO26n provides object labels and boxes (confidence threshold 0.25).
+2. Depth Anything V2 estimates metric depth for a center-cropped 518×518
+   image.
+3. Each object uses the positive finite **median depth in its central
+   60%** (20% margin on all sides).
+4. Distance estimate = `max(0, 1.05 * median_depth - 0.10)` metres.
+
+These constants are copied from Maya's notebook. The mobile crop differs
+from the notebook's full-image aspect-preserving resize, so exact numerical
+parity cannot be assumed. Objects outside the depth crop may have no
+distance reading.
+
+## Limitations and warnings
+
+- **Performance will not automatically improve by embedding the models.**
+  Both still run on the phone. In particular, Depth Anything V2 (~99 MB) is
+  demanding, and the Galaxy A32 is likely to struggle. Processing may cause
+  long pauses and battery drain. Measure both phones with a profile build.
+- The app captures snapshots, not a smooth live inference stream.
+- Flutter analysis and tests must still be executed locally; on-device
+  loading, performance, and distance accuracy remain unverified.
+- Depth readings are estimates and **must not be used to guide blind or
+  visually impaired users around hazards** until rigorously validated.
+- Review Ultralytics and Depth Anything model licenses before distributing
+  APKs or publishing the app.
+- GitHub excludes model binaries to avoid pushing very large files in normal
+  Git commits. The **built APK includes them** once downloaded locally.
+
+Source model references:
+- https://github.com/ultralytics/yolo-flutter-app/releases/tag/v0.7.0
+- https://huggingface.co/litert-community/Depth-Anything-V2-Metric-Hypersim-Small
+
+The previous server-hosted prototype remains on the separate
+`feature/server-hosted-maya` branch, and the Colab client on `main`
+remains untouched.

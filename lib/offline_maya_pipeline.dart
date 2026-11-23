@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui';
@@ -9,7 +8,7 @@ import 'package:ultralytics_yolo/ultralytics_yolo.dart';
 
 /// The exact model family used by Maya alsuos.ipynb:
 /// YOLO26n (COCO objects) + Depth Anything V2 Metric Hypersim Small.
-/// Unlike the Colab notebook, inference happens entirely on Android.
+/// Both TFLite models are embedded in the Android APK; no network calls.
 class OfflineMayaPipeline {
   OfflineMayaPipeline._(this._yolo, this._depth, this._depthSize);
 
@@ -22,16 +21,17 @@ class OfflineMayaPipeline {
   static const double offset = -0.10;
   static const double boxInset = 0.20;
 
-  static Future<OfflineMayaPipeline> load(String depthModelPath) async {
-    final yolo = YOLO(modelPath: 'yolo26n', task: YOLOTask.detect);
+  static Future<OfflineMayaPipeline> load() async {
+    final yolo = YOLO(
+      modelPath: 'assets/models/yolo26n_w8a32.tflite',
+      task: YOLOTask.detect,
+    );
     Interpreter? depth;
     try {
-      final ok = await yolo.loadModel(); // downloads YOLO26n only on first use
+      final ok = await yolo.loadModel(); // loads the bundled Flutter asset
       if (!ok) throw StateError('YOLO26n could not be loaded.');
-      depth = await Interpreter.fromFile(
-        // The depth TFLite export must match the notebook's Hypersim Small weights.
-        // It is downloaded separately and saved for offline operation.
-        File(depthModelPath),
+      depth = await Interpreter.fromAsset(
+        'assets/models/depth_anything_v2_metric_hypersim_small.tflite',
         options: InterpreterOptions()..threads = 2,
       );
 

@@ -4,7 +4,6 @@ import 'dart:math' as math;
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart';
 
 import 'offline_maya_pipeline.dart';
 
@@ -35,11 +34,6 @@ class OfflineCameraScreen extends StatefulWidget {
 }
 
 class _OfflineCameraScreenState extends State<OfflineCameraScreen> {
-  static const _depthUrl =
-      'https://huggingface.co/litert-community/'
-      'Depth-Anything-V2-Metric-Hypersim-Small/resolve/main/'
-      'Depth-Anything-V2-Metric-Hypersim-Small-fp32.tflite';
-
   CameraController? _camera;
   OfflineMayaPipeline? _pipeline;
   Timer? _timer;
@@ -47,80 +41,19 @@ class _OfflineCameraScreenState extends State<OfflineCameraScreen> {
   bool _initializing = false;
   bool _processing = false;
   int _session = 0;
-  String _status = 'Prepare models once with Wi-Fi before going to university.';
-
-  Future<File> _cachedDepthFile() async {
-    final root = await getApplicationSupportDirectory();
-    final folder = Directory('${root.path}/models');
-    await folder.create(recursive: true);
-    return File('${folder.path}/maya_hypersim_small.tflite');
-  }
-
-  Future<File> _obtainDepthFile() async {
-    final file = await _cachedDepthFile();
-    // Do not trust a tiny HTML response or Git-LFS pointer as a model.
-    if (await file.exists() && await file.length() >= 90000000) {
-      return file;
-    }
-
-    final partial = File('${file.path}.download');
-    final client = HttpClient();
-    try {
-      if (mounted) {
-        setState(() => _status =
-            'Downloading Maya Depth Anything V2 (~99 MB). Wi-Fi is needed once.');
-      }
-      final request = await client.getUrl(Uri.parse(_depthUrl));
-      final response = await request.close();
-      if (response.statusCode != HttpStatus.ok) {
-        throw HttpException('Depth model download returned HTTP ${response.statusCode}');
-      }
-      if (await partial.exists()) await partial.delete();
-      final writer = partial.openWrite();
-      await writer.addStream(response);
-      await writer.flush();
-      await writer.close();
-
-      if (await partial.length() < 90000000) {
-        throw StateError('Downloaded file is too small to be the expected model.');
-      }
-      // A TFLite FlatBuffer has the TFL3 identifier at byte offsets 4..7.
-      final header = await partial.open();
-      try {
-        await header.setPosition(4);
-        final bytes = await header.read(4);
-        if (String.fromCharCodes(bytes) != 'TFL3') {
-          throw StateError('Downloaded file is not a TFLite model.');
-        }
-      } finally {
-        await header.close();
-      }
-      if (await file.exists()) await file.delete();
-      return await partial.rename(file.path);
-    } catch (_) {
-      if (await partial.exists()) await partial.delete();
-      rethrow;
-    } finally {
-      client.close(force: true);
-    }
-  }
+  String _status = 'AI models are bundled with the app. No server or internet needed.';
 
   Future<void> _start() async {
     if (_initializing || _pipeline != null) return;
     setState(() {
       _initializing = true;
-      _status = 'Preparing models for offline use...';
+      _status = 'Loading bundled AI models...';
     });
 
     OfflineMayaPipeline? pipeline;
     CameraController? camera;
     try {
-      final modelFile = await _obtainDepthFile();
-      if (mounted) {
-        setState(() => _status =
-            'Loading YOLO26n and Depth Anything. First setup may need internet.');
-      }
-      pipeline = await OfflineMayaPipeline.load(modelFile.path);
+      pipeline = await OfflineMayaPipeline.load();
 
       final cameras = await availableCameras();
       if (cameras.isEmpty) throw StateError('No camera available');
@@ -209,7 +142,7 @@ class _OfflineCameraScreenState extends State<OfflineCameraScreen> {
       _camera = null;
       _pipeline = null;
       _result = null;
-      _status = 'Stopped. Models remain on the phone for next time.';
+      _status = 'Stopped. Models are bundled inside the app.';
     });
     await oldCamera?.dispose();
     await oldPipeline?.close();
@@ -242,14 +175,14 @@ class _OfflineCameraScreenState extends State<OfflineCameraScreen> {
               if (camera == null) ...[
                 const Text(
                   'YOLO26n + Depth Anything V2 Metric Hypersim Small. '
-                  'Prepare once on Wi-Fi, then test in airplane mode.',
+                  'Both AI models are included in the APK. No Colab or server needed.',
                 ),
                 const SizedBox(height: 12),
                 FilledButton(
                   onPressed: _initializing ? null : _start,
                   child: Text(_initializing
-                      ? 'Preparing the offline models...'
-                      : 'Prepare / Start offline models'),
+                      ? 'Loading local models...'
+                      : 'Start camera and AI'),
                 ),
               ] else ...[
                 Expanded(

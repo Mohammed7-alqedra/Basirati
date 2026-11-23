@@ -6,9 +6,9 @@ import 'package:baseerte_ai/main.dart';
 import 'package:baseerte_ai/offline_maya_pipeline.dart';
 
 void main() {
-  testWidgets('Offline model preparation is available', (tester) async {
+  testWidgets('Bundled model start screen is available', (tester) async {
     await tester.pumpWidget(const BasiratiApp());
-    expect(find.text('Prepare / Start offline models'), findsOneWidget);
+    expect(find.text('Start camera and AI'), findsOneWidget);
     expect(find.text('Basirati - Offline Models'), findsOneWidget);
   });
 
