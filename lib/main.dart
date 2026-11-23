@@ -104,7 +104,9 @@ class _OfflineCameraScreenState extends State<OfflineCameraScreen> {
     final pipeline = _pipeline;
     if (_processing || !mounted || session != _session ||
         camera == null || pipeline == null ||
-        !camera.value.isInitialized || camera.value.isTakingPicture) return;
+        !camera.value.isInitialized || camera.value.isTakingPicture) {
+      return;
+    }
 
     _processing = true;
     try {
