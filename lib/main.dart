@@ -12,7 +12,7 @@ Future<void> main() async {
   runApp(const BasiratiApp());
 }
 
-/// Camera client for the Python API in Maya alsuos.ipynb.
+/// Camera client for Maya Alsuos update 8.ipynb (YOLOv5nu + Depth Anything V2).
 /// No AI model is executed on the Android device.
 class BasiratiApp extends StatelessWidget {
   const BasiratiApp({super.key});
@@ -20,7 +20,7 @@ class BasiratiApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Basirati notebook AI',
+      title: 'Basirati AI - Maya Update 8',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark(),
       home: const NotebookCameraScreen(),
@@ -43,8 +43,11 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
   Timer? _timer;
   Uint8List? _annotatedFrame;
   List<String> _objects = <String>[];
+  List<String> _announcements = <String>[];
+  String? _visibilityWarning;
+  bool _dangerAlert = false;
   String? _baseUrl;
-  String _status = 'Run the Colab notebook and paste its public HTTPS URL.';
+  String _status = 'Run Maya Alsuos update 8.ipynb and paste its HTTPS API URL.';
   bool _connecting = false;
   bool _processing = false;
   int _session = 0;
@@ -97,7 +100,10 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
         _baseUrl = base;
         _annotatedFrame = null;
         _objects = <String>[];
-        _status = 'Connected to the notebook model server.';
+        _announcements = <String>[];
+        _visibilityWarning = null;
+        _dangerAlert = false;
+        _status = 'Connected to Maya Update 8 model server.';
       });
 
       _timer?.cancel();
@@ -171,9 +177,30 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
           final distance = value is num
               ? '${value.toStringAsFixed(2)} m (test)'
               : 'distance unavailable';
-          objects.add('$name - $distance');
+          final proximity = entry['proximity_level']?.toString();
+          final danger = entry['danger_zone'] == true;
+          final tag = proximity == null ? '' : ' - $proximity';
+          objects.add('${danger ? '[NEAR] ' : ''}$name - $distance$tag');
         }
       }
+
+      // Update 8 includes visual warning/announcement data in its JSON API.
+      // These are displayed only; the phone does not automatically vibrate
+      // or speak based on unvalidated distance estimates.
+      final announcements = <String>[];
+      final newAnnouncements = result['announcements'];
+      if (newAnnouncements is List) {
+        for (final item in newAnnouncements) {
+          if (item is Map && item['speech_text'] is String) {
+            announcements.add(item['speech_text'] as String);
+          }
+        }
+      }
+      final visibility = result['camera_visibility'];
+      final warning = visibility is Map
+          ? visibility['warning_message']?.toString()
+          : null;
+      final danger = result['trigger_vibration'] == true;
 
       final jpg = result['output_frame'];
       final annotated = jpg is String ? base64Decode(jpg) : null;
@@ -181,6 +208,9 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
 
       setState(() {
         _objects = objects;
+        _announcements = announcements;
+        _visibilityWarning = warning;
+        _dangerAlert = danger;
         _annotatedFrame = annotated;
         final seconds = result['processing_time'];
         final timing = seconds is num
@@ -209,7 +239,10 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
         _baseUrl = null;
         _annotatedFrame = null;
         _objects = <String>[];
-        _status = 'Disconnected. Reconnect with the current Colab URL.';
+        _announcements = <String>[];
+        _visibilityWarning = null;
+        _dangerAlert = false;
+        _status = 'Disconnected. Reconnect with the current API URL.';
       });
     }
     await previous?.dispose();
@@ -230,7 +263,7 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
   Widget build(BuildContext context) {
     final camera = _camera;
     return Scaffold(
-      appBar: AppBar(title: const Text('Basirati notebook AI')),
+      appBar: AppBar(title: const Text('Basirati AI - Maya Update 8')),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -238,7 +271,7 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               if (camera == null) ...[
-                const Text('Run Maya alsuos.ipynb in Colab. '
+                const Text('Run Maya Alsuos update 8.ipynb in Colab. '
                     'Copy the API PUBLIC URL from the last cell.'),
                 const SizedBox(height: 12),
                 TextField(
@@ -271,7 +304,14 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                Text('Notebook detections:',
+                if (_visibilityWarning != null)
+                  Text(_visibilityWarning!, style: const TextStyle(color: Colors.orangeAccent)),
+                if (_dangerAlert)
+                  const Text('Nearby object alert (experimental)',
+                      style: TextStyle(color: Colors.redAccent)),
+                if (_announcements.isNotEmpty)
+                  Text('Latest announcement: ${_announcements.join("; ")}'),
+                Text('Object detections and proximity:',
                     style: Theme.of(context).textTheme.titleMedium),
                 Expanded(
                   child: ListView(
@@ -290,6 +330,7 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
               const SizedBox(height: 4),
               const Text(
                 'Photos are uploaded to the notebook server. '
+                'Warning flags are visual only in this version. '
                 'Do not use experimental distances for safe navigation.',
                 style: TextStyle(fontSize: 12),
               ),
