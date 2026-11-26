@@ -82,14 +82,18 @@ List<ObjectDetection> detectionsFromApi(Object? value) {
     if (item is! Map) continue;
     final box = item['bbox'];
     if (box is! List || box.length != 4 ||
-        box.any((v) => v is! num)) continue;
+        box.any((v) => v is! num)) {
+      continue;
+    }
 
     final left = (box[0] as num).toDouble();
     final top = (box[1] as num).toDouble();
     final right = (box[2] as num).toDouble();
     final bottom = (box[3] as num).toDouble();
     if (![left, top, right, bottom].every((v) => v.isFinite) ||
-        right <= left || bottom <= top) continue;
+        right <= left || bottom <= top) {
+      continue;
+    }
 
     final object = item['object']?.toString() ?? 'Object';
     final distance = item['calibrated_distance_m'];
