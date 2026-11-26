@@ -41,7 +41,6 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
 
   CameraController? _camera;
   Timer? _timer;
-  Uint8List? _annotatedFrame;
   List<String> _objects = <String>[];
   List<String> _announcements = <String>[];
   String? _visibilityWarning;
@@ -98,7 +97,6 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
       setState(() {
         _camera = newCamera;
         _baseUrl = base;
-        _annotatedFrame = null;
         _objects = <String>[];
         _announcements = <String>[];
         _visibilityWarning = null;
@@ -202,8 +200,6 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
           : null;
       final danger = result['trigger_vibration'] == true;
 
-      final jpg = result['output_frame'];
-      final annotated = jpg is String ? base64Decode(jpg) : null;
       if (!mounted || session != _session) return;
 
       setState(() {
@@ -211,7 +207,6 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
         _announcements = announcements;
         _visibilityWarning = warning;
         _dangerAlert = danger;
-        _annotatedFrame = annotated;
         final seconds = result['processing_time'];
         final timing = seconds is num
             ? ' in ${seconds.toStringAsFixed(2)} s'
@@ -237,7 +232,6 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
       setState(() {
         _camera = null;
         _baseUrl = null;
-        _annotatedFrame = null;
         _objects = <String>[];
         _announcements = <String>[];
         _visibilityWarning = null;
@@ -293,14 +287,9 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
               ] else ...[
                 Expanded(
                   flex: 3,
-                  child: Center(
-                    child: _annotatedFrame != null
-                        ? Image.memory(
-                            _annotatedFrame!,
-                            fit: BoxFit.contain,
-                            gaplessPlayback: true,
-                          )
-                        : CameraPreview(camera),
+                  child: LiveCameraWithDetections(
+                    preview: CameraPreview(camera),
+                    objects: _objects,
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -338,6 +327,72 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
           ),
         ),
       ),
+    );
+  }
+}
+
+
+/// Displays the real camera continuously, alongside the latest AI results.
+/// AI detections may update slower than the live camera preview.
+class LiveCameraWithDetections extends StatelessWidget {
+  const LiveCameraWithDetections({
+    super.key,
+    required this.preview,
+    required this.objects,
+  });
+
+  final Widget preview;
+  final List<String> objects;
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Center(child: preview),
+        if (objects.isNotEmpty)
+          Positioned(
+            left: 8,
+            right: 8,
+            bottom: 8,
+            child: IgnorePointer(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Colors.black87,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(8),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Latest AI snapshot (experimental)',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.white70,
+                        ),
+                      ),
+                      for (final object in objects.take(3))
+                        Text(
+                          object,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                      if (objects.length > 3)
+                        Text(
+                          '+${objects.length - 3} more objects below',
+                          style: const TextStyle(color: Colors.white70),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
     );
   }
 }

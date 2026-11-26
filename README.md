@@ -33,6 +33,20 @@ text-to-speech or vibration**; the notebook only sends the flags and text.
 6. The phone captures JPEG snapshots roughly every 1.5 seconds (skipping
    overlapping requests) and receives AI results from the notebook server.
 
+## Live preview without changing AI processing
+
+The app now keeps `CameraPreview()` visible at all times, instead of replacing
+it with a static annotated JPEG from the server. Latest object labels and
+experimental distances appear over the camera and in the list below.
+
+The phone still uses the previous `takePicture()` capture method,
+`ResolutionPreset.medium`, and its original JPEG upload to `/process-frame`.
+Neither Maya's models nor her notebook code changed. The server still sends
+an annotated JPEG in its response, but Flutter no longer decodes or displays it.
+
+The camera preview should appear more responsive, but taking photos can still
+cause brief pauses, and object labels may lag behind the live camera image.
+
 The notebook **still requires a running Colab instance** for inference.
 It does not include a permanent hosted GPU deployment. The API URL changes
 when the tunnel restarts. The current Flutter client does **not** run AI
