@@ -1,5 +1,5 @@
 name: baseerte_ai
-description: "Camera client for Maya Alsuos Update 8 notebook"
+description: "Live camera client for Maya Alsuos Update 8 AI notebook"
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -11,6 +11,7 @@ dependencies:
     sdk: flutter
   camera: ^0.12.2
   http: ^1.3.0
+  image: ^4.9.1
 
 dev_dependencies:
   flutter_test:
