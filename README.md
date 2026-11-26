@@ -35,17 +35,26 @@ text-to-speech or vibration**; the notebook only sends the flags and text.
 
 ## Live preview without changing AI processing
 
-The app now keeps `CameraPreview()` visible at all times, instead of replacing
-it with a static annotated JPEG from the server. Latest object labels and
-experimental distances appear over the camera and in the list below.
+The app keeps `CameraPreview()` visible and draws a rectangular box
+**directly around each detected object**, labelled with its name and experimental
+distance. Normal detections are green; near-object flags are red. The duplicate
+object list below the camera was removed to keep the screen clear.
 
-The phone still uses the previous `takePicture()` capture method,
-`ResolutionPreset.medium`, and its original JPEG upload to `/process-frame`.
-Neither Maya's models nor her notebook code changed. The server still sends
-an annotated JPEG in its response, but Flutter no longer decodes or displays it.
+The phone still uses the original `takePicture()` method at
+`ResolutionPreset.medium`, with the same JPEG upload to `/process-frame`.
+**Maya's YOLOv5 Nano, Depth Anything V2, calibration, and entire notebook are
+unchanged**. The Flutter client reads the annotated JPEG's small header to get
+the exact pixel dimensions for mapping the notebook's existing bounding boxes.
+It never displays or decodes the full annotated JPEG. This does not change the
+input images sent to the AI or their depth calculations.
 
-The camera preview should appear more responsive, but taking photos can still
-cause brief pauses, and object labels may lag behind the live camera image.
+Boxes are approximate when the still photo and preview use different camera
+crops. They show the **last photo**, not a continuously tracked object, so they
+can move away from an object when the phone moves. Boxes expire 3 seconds after
+capture and are not displayed if the network response is too late or JPEG
+dimensions cannot be determined. Keep the phone steady during test captures.
+The live preview should look smoother, although `takePicture()` may still
+cause brief camera pauses.
 
 The notebook **still requires a running Colab instance** for inference.
 It does not include a permanent hosted GPU deployment. The API URL changes

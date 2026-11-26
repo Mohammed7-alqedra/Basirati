@@ -7,6 +7,8 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
+import 'detection_overlay.dart';
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const BasiratiApp());
@@ -41,8 +43,9 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
 
   CameraController? _camera;
   Timer? _timer;
-  List<String> _objects = <String>[];
-  List<String> _announcements = <String>[];
+  List<ObjectDetection> _detections = const [];
+  Size? _photoSize;
+  Timer? _boxExpiry;
   String? _visibilityWarning;
   bool _dangerAlert = false;
   String? _baseUrl;
@@ -94,11 +97,12 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
       }
 
       final session = ++_session;
+      _boxExpiry?.cancel();
       setState(() {
         _camera = newCamera;
         _baseUrl = base;
-        _objects = <String>[];
-        _announcements = <String>[];
+        _detections = const [];
+        _photoSize = null;
         _visibilityWarning = null;
         _dangerAlert = false;
         _status = 'Connected to Maya Update 8 model server.';
@@ -132,6 +136,7 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
     _processing = true;
     try {
       final photo = await camera.takePicture();
+      final capturedAt = DateTime.now();
       late final Uint8List bytes;
       try {
         bytes = await photo.readAsBytes();
@@ -165,35 +170,16 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
         throw StateError('Unexpected notebook API response');
       }
 
-      final objects = <String>[];
-      final detections = result['detections'];
-      if (detections is List) {
-        for (final entry in detections) {
-          if (entry is! Map) continue;
-          final name = entry['object']?.toString() ?? 'object';
-          final value = entry['calibrated_distance_m'];
-          final distance = value is num
-              ? '${value.toStringAsFixed(2)} m (test)'
-              : 'distance unavailable';
-          final proximity = entry['proximity_level']?.toString();
-          final danger = entry['danger_zone'] == true;
-          final tag = proximity == null ? '' : ' - $proximity';
-          objects.add('${danger ? '[NEAR] ' : ''}$name - $distance$tag');
-        }
-      }
+      // Read dimensions from the existing annotated JPEG header. The full
+      // JPEG is never decoded or displayed over the live camera.
+      final jpeg = result['output_frame'];
+      final photoSize = jpeg is String ? jpegSizeFromBase64(jpeg) : null;
+      final detections = detectionsFromApi(result['detections']);
+      const maxBoxAge = Duration(seconds: 3);
+      final age = DateTime.now().difference(capturedAt);
+      final showBoxes = photoSize != null &&
+          age < maxBoxAge && age >= Duration.zero;
 
-      // Update 8 includes visual warning/announcement data in its JSON API.
-      // These are displayed only; the phone does not automatically vibrate
-      // or speak based on unvalidated distance estimates.
-      final announcements = <String>[];
-      final newAnnouncements = result['announcements'];
-      if (newAnnouncements is List) {
-        for (final item in newAnnouncements) {
-          if (item is Map && item['speech_text'] is String) {
-            announcements.add(item['speech_text'] as String);
-          }
-        }
-      }
       final visibility = result['camera_visibility'];
       final warning = visibility is Map
           ? visibility['warning_message']?.toString()
@@ -202,18 +188,31 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
 
       if (!mounted || session != _session) return;
 
+      _boxExpiry?.cancel();
       setState(() {
-        _objects = objects;
-        _announcements = announcements;
+        _detections = showBoxes ? detections : const [];
+        _photoSize = showBoxes ? photoSize : null;
         _visibilityWarning = warning;
-        _dangerAlert = danger;
+        _dangerAlert = danger && showBoxes;
         final seconds = result['processing_time'];
         final timing = seconds is num
             ? ' in ${seconds.toStringAsFixed(2)} s'
             : '';
-        _status = 'Notebook processed frame$timing. '
-            'Distance is experimental.';
+        _status = showBoxes
+            ? 'AI snapshot$timing. Distance is experimental.'
+            : 'AI result too old or image dimensions unavailable. '
+              'No boxes shown; keep the camera steady.';
       });
+      if (showBoxes) {
+        _boxExpiry = Timer(maxBoxAge - age, () {
+          if (!mounted || session != _session) return;
+          setState(() {
+            _detections = const [];
+            _photoSize = null;
+            _dangerAlert = false;
+          });
+        });
+      }
     } catch (error) {
       if (mounted && session == _session) {
         setState(() => _status = 'Frame error: $error');
@@ -227,13 +226,15 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
     ++_session;
     _timer?.cancel();
     _timer = null;
+    _boxExpiry?.cancel();
+    _boxExpiry = null;
     final previous = _camera;
     if (mounted) {
       setState(() {
         _camera = null;
         _baseUrl = null;
-        _objects = <String>[];
-        _announcements = <String>[];
+        _detections = const [];
+        _photoSize = null;
         _visibilityWarning = null;
         _dangerAlert = false;
         _status = 'Disconnected. Reconnect with the current API URL.';
@@ -246,6 +247,7 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
   void dispose() {
     ++_session;
     _timer?.cancel();
+    _boxExpiry?.cancel();
     _client.close();
     _urlController.dispose();
     final camera = _camera;
@@ -289,7 +291,13 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
                   flex: 3,
                   child: LiveCameraWithDetections(
                     preview: CameraPreview(camera),
-                    objects: _objects,
+                    previewAspectRatio:
+                        MediaQuery.orientationOf(context) == Orientation.portrait
+                            ? 1 / camera.value.aspectRatio
+                            : camera.value.aspectRatio,
+                    detections: _detections,
+                    photoSize: _photoSize,
+                    sensorOrientation: camera.description.sensorOrientation,
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -298,17 +306,6 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
                 if (_dangerAlert)
                   const Text('Nearby object alert (experimental)',
                       style: TextStyle(color: Colors.redAccent)),
-                if (_announcements.isNotEmpty)
-                  Text('Latest announcement: ${_announcements.join("; ")}'),
-                Text('Object detections and proximity:',
-                    style: Theme.of(context).textTheme.titleMedium),
-                Expanded(
-                  child: ListView(
-                    children: _objects.isEmpty
-                        ? [const Text('No objects reported yet')]
-                        : _objects.map((name) => Text(name)).toList(),
-                  ),
-                ),
                 OutlinedButton(
                   onPressed: _disconnect,
                   child: const Text('Disconnect'),
@@ -319,7 +316,7 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
               const SizedBox(height: 4),
               const Text(
                 'Photos are uploaded to the notebook server. '
-                'Warning flags are visual only in this version. '
+                'Boxes come from the last photo and can lag behind motion. '
                 'Do not use experimental distances for safe navigation.',
                 style: TextStyle(fontSize: 12),
               ),
@@ -331,68 +328,3 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
   }
 }
 
-
-/// Displays the real camera continuously, alongside the latest AI results.
-/// AI detections may update slower than the live camera preview.
-class LiveCameraWithDetections extends StatelessWidget {
-  const LiveCameraWithDetections({
-    super.key,
-    required this.preview,
-    required this.objects,
-  });
-
-  final Widget preview;
-  final List<String> objects;
-
-  @override
-  Widget build(BuildContext context) {
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        Center(child: preview),
-        if (objects.isNotEmpty)
-          Positioned(
-            left: 8,
-            right: 8,
-            bottom: 8,
-            child: IgnorePointer(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: Colors.black87,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.all(8),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Latest AI snapshot (experimental)',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: Colors.white70,
-                        ),
-                      ),
-                      for (final object in objects.take(3))
-                        Text(
-                          object,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(color: Colors.white),
-                        ),
-                      if (objects.length > 3)
-                        Text(
-                          '+${objects.length - 3} more objects below',
-                          style: const TextStyle(color: Colors.white70),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-      ],
-    );
-  }
-}
