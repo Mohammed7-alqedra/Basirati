@@ -50,11 +50,17 @@ input images sent to the AI or their depth calculations.
 
 Boxes are approximate when the still photo and preview use different camera
 crops. They show the **last photo**, not a continuously tracked object, so they
-can move away from an object when the phone moves. Boxes expire 3 seconds after
-capture and are not displayed if the network response is too late or JPEG
-dimensions cannot be determined. Keep the phone steady during test captures.
-The live preview should look smoother, although `takePicture()` may still
-cause brief camera pauses.
+can move away from an object when the phone moves. The latest boxes and
+distances now remain visible **between successful AI snapshots** and update
+whenever the server returns a new detection (including changes as the phone
+moves closer to or farther from an object). If a new snapshot no longer
+detects an object, its box is removed. A 12-second safety watchdog from photo
+capture prevents indefinitely showing old detections if the server stalls.
+A response older than that is not shown. These are not per-frame, real-time
+tracked boxes: the camera still captures every ~1.5 seconds, and actual AI
+updates can be slower due to photo capture and network latency. Keep the phone
+steady during test captures. The live preview should look smoother, although
+`takePicture()` may still cause brief camera pauses.
 
 The notebook **still requires a running Colab instance** for inference.
 It does not include a permanent hosted GPU deployment. The API URL changes

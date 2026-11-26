@@ -175,7 +175,10 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
       final jpeg = result['output_frame'];
       final photoSize = jpeg is String ? jpegSizeFromBase64(jpeg) : null;
       final detections = detectionsFromApi(result['detections']);
-      const maxBoxAge = Duration(seconds: 3);
+      // Retain the latest detection between successful photo requests,
+      // rather than clearing it after 3 seconds. The safety watchdog still
+      // hides boxes if the AI stops returning fresh snapshots.
+      const maxBoxAge = Duration(seconds: 12);
       final age = DateTime.now().difference(capturedAt);
       final showBoxes = photoSize != null &&
           age < maxBoxAge && age >= Duration.zero;
@@ -198,18 +201,22 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
         final timing = seconds is num
             ? ' in ${seconds.toStringAsFixed(2)} s'
             : '';
-        _status = showBoxes
-            ? 'AI snapshot$timing. Distance is experimental.'
-            : 'AI result too old or image dimensions unavailable. '
-              'No boxes shown; keep the camera steady.';
+        _status = !showBoxes
+            ? 'AI result too old or image dimensions unavailable. '
+              'No boxes shown; keep the camera steady.'
+            : detections.isEmpty
+                ? 'No objects detected in the latest AI snapshot.'
+                : 'AI snapshot$timing. Distance is experimental.';
       });
-      if (showBoxes) {
+      if (showBoxes && detections.isNotEmpty) {
         _boxExpiry = Timer(maxBoxAge - age, () {
           if (!mounted || session != _session) return;
           setState(() {
             _detections = const [];
             _photoSize = null;
             _dangerAlert = false;
+            _status = 'No fresh AI update for 12 seconds. '
+                'Boxes hidden until another detection arrives.';
           });
         });
       }

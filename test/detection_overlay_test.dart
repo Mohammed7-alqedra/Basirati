@@ -34,6 +34,29 @@ void main() {
     expect(boxes.single.rect, const Rect.fromLTRB(100, 200, 300, 400));
   });
 
+  test('Fresh detection snapshots update the displayed distance', () {
+    final earlier = detectionsFromApi([
+      {
+        'object': 'chair',
+        'bbox': [100, 200, 300, 400],
+        'calibrated_distance_m': 2.3,
+        'danger_zone': false,
+      },
+    ]);
+    final closer = detectionsFromApi([
+      {
+        'object': 'chair',
+        'bbox': [110, 210, 310, 410],
+        'calibrated_distance_m': 1.7,
+        'danger_zone': false,
+      },
+    ]);
+    expect(earlier.single.label, 'chair — 2.30 m');
+    expect(closer.single.label, 'chair — 1.70 m');
+    expect(closer.single.rect, isNot(earlier.single.rect));
+    expect(detectionsFromApi([]), isEmpty);
+  });
+
   test('Maps photo box onto live preview with unchanged aspect ratio', () {
     final mapped = mapSnapshotBoxToPreview(
       rect: const Rect.fromLTRB(100, 200, 300, 400),
