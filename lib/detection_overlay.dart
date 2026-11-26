@@ -75,7 +75,7 @@ class DetectionPainter extends CustomPainter {
         textDirection: TextDirection.ltr,
         maxLines: 1,
         ellipsis: '…',
-      )..layout(maxWidth: math.max(20, size.width - 12));
+      )..layout(maxWidth: math.max(20.0, size.width - 12));
       final textX = bounds.left.clamp(4.0, math.max(4.0, size.width - painter.width - 8)).toDouble();
       final textY = (bounds.top - painter.height - 7).clamp(4.0, math.max(4.0, size.height - painter.height - 8)).toDouble();
       final background = Rect.fromLTWH(

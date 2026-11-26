@@ -26,7 +26,7 @@ void main() {
     expect(jpeg.height, width);
     expect(decoded, isNotNull);
     expect(decoded!.width, height);
-    expect(decoded.height, width);
+    expect(decoded!.height, width);
   });
 
   test('NV21 packed camera buffer can be encoded', () {

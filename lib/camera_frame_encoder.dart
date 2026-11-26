@@ -143,7 +143,7 @@ EncodedCameraFrame encodeCameraFrame(CameraFrameSnapshot frame) {
         throw const FormatException('Unsupported YUV plane layout');
       }
 
-      final c = (yy - 16).clamp(0, 255);
+      final c = (yy - 16).clamp(0, 255).toInt();
       final d = uu - 128;
       final e = vv - 128;
       final red = ((298 * c + 409 * e + 128) >> 8).clamp(0, 255);

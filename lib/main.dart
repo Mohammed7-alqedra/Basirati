@@ -255,9 +255,11 @@ class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
           final meters = distance is num ? distance.toDouble() : null;
           final dangerous = entry['danger_zone'] == true;
           final proximity = entry['proximity_level']?.toString() ?? '';
+          final distanceText = meters == null
+              ? 'unknown distance'
+              : '${meters.toStringAsFixed(2)} m (test)';
           objects.add(
-            '${dangerous ? "[NEAR] " : ""}$label - '
-            '${meters == null ? "unknown distance" : "${meters.toStringAsFixed(2)} m (test)"}'
+            '${dangerous ? "[NEAR] " : ""}$label - $distanceText'
             '${proximity.isEmpty ? "" : " - $proximity"}',
           );
 
