@@ -1,127 +1,83 @@
-# Baseerte AI — Maya Alsuos Update 10 (split phone + Colab)
+# Baseerte AI — supplied YOLO11 detector + Colab depth
 
-## Architecture
+The on-device detector in this branch comes from the uploaded
+`basirati_for_det(1).zip` package, not the earlier experimental
+`ultralytics_yolo` code.
 
-**Object detection runs on the Android phone. Depth/distance estimation runs on Google Colab.**
-
-| Part | Technology | Runs where |
+| Component | Where it runs | File |
 | --- | --- | --- |
-| Camera + box overlay | Flutter `camera` and CustomPaint | Android |
-| Object detection | YOLO11 Nano (`yolo11n.tflite`) via official `ultralytics_yolo` Flutter plugin | Android, on-device |
-| Image/box transport | Multipart HTTPS POST | Phone → Colab |
-| Depth estimation | Depth Anything V2 Metric Hypersim Small | Google Colab |
-| Distance calibration | `max(0, 0.444 * raw_depth)` | Google Colab |
-| Endpoint | `POST /estimate-depth` | Google Colab |
+| YOLO11n (320×320, TFLite) | Android phone | `lib/detection/yolo_detector.dart` |
+| Model and labels | Bundled in APK | `assets/yolo11n.tflite`, `assets/labels.txt` |
+| Camera and volume-key voice controls | Android/Flutter | `lib/main.dart`, `android/app/src/main/kotlin/com/baseerte/baseerte_ai/MainActivity.kt` |
+| Bounding boxes | Android/Flutter | `lib/ui/overlay_painter.dart` |
+| YUV420 frame -> upright JPEG | Phone, sampled while streaming | `lib/depth/frame_encoder.dart` |
+| Depth API HTTP transport | Android phone | `lib/depth/colab_depth_client.dart` |
+| Depth Anything V2 & calibration | Google Colab **only** | `Maya Alsuos update 10.ipynb` |
 
-The notebook in `main` is **`Maya Alsuos update 10.ipynb`**. The previous
-`Maya Alsuos update 8.ipynb` was removed from `main`, but remains in Git
-history and the backup branch
-`backup/main-before-update10-split-2026-11-28`.
+## Exact YOLO model included in the repository
 
-## How it works
+The supplied model is **10,688,099 bytes** with SHA-256:
+`eb9b233b9e339fb5ef83926be5c70e0f7fab286c0b30979617d8622dadc7b157`.
 
-1. The Android camera displays a live `CameraPreview()`. Approximately
-   every 1.5 seconds (or slower if busy) it captures a JPEG using the
-   original `takePicture()` method at `ResolutionPreset.medium`.
-2. The phone executes YOLO11 Nano **locally** on the JPEG and obtains
-   normalized boxes and object labels. The plugin handles native TFLite
-   inference and non-maximum suppression.
-3. Flutter immediately draws the boxes and object names over the camera.
-   It may initially say **measuring…** next to an object.
-4. If Colab is connected, Flutter sends **the same JPEG and those boxes**
-   as multipart form data to `/estimate-depth`:
-   - `file`: `camera.jpg`.
-   - `detections`: JSON array with `label`, `score`, `left`, `top`,
-     `right`, `bottom`; the box coordinates are normalized `0..1`.
-5. Colab computes a depth map with **Depth Anything V2**, measures depth
-   inside each supplied box, applies scale factor `0.444`, and returns
-   `detections[*].calibrated_distance_m`.
-6. Flutter matches the returned depth to the current local box by **label
-   and spatial overlap**, so two chairs cannot be matched only by their
-   common class. Distances are updated as fresh responses arrive. Recent
-   values expire after 8 seconds; stale camera boxes also expire.
+The original model binary was too large for a single GitHub connector upload.
+To preserve it **exactly**, the GitHub repository stores 28 base64 text assets
+in `assets/model_segments/`. On application startup, `YoloDetector.load()`
+reassembles the bytes **in memory** and passes them to
+`tflite_flutter.Interpreter.fromBuffer`. This is still a **local, on-device**
+YOLO model and requires **no internet or Colab** to detect objects.
 
-**Important:** YOLO does not run in Colab. The Colab API does not detect
-objects itself. When Colab is not connected, phone object detection still
-works, but no distance is available.
+You do **not** have to copy the model manually after `git pull`.
+The integration ZIP also contains the original standalone
+`assets/yolo11n.tflite` for verification or use outside this build.
 
-## Model setup
+The model uses float32 input `[1,3,320,320]` and output `[1,84,2100]`.
 
-The phone uses the official Ultralytics release model:
+## Run in Google Colab
 
-`https://github.com/ultralytics/yolo-flutter-app/releases/download/v0.2.0/yolo11n.tflite`
+1. Upload/open `Maya Alsuos update 10.ipynb`.
+2. Select a GPU runtime if available and execute notebook cells 0–14.
+3. Copy the `API PUBLIC URL` ending in `.trycloudflare.com`.
+4. Open `<URL>/health` and confirm `"yolo_in_colab": false`.
+5. On your phone, open Baseerte AI, tap the **settings icon** in the
+   upper-right corner and paste the base HTTPS URL; tap **Connect**.
 
-The `ultralytics_yolo` plugin downloads this model **once on first use**
-and caches it on the phone, then runs its inference locally. An internet
-connection is required for this **initial model download**. A TFLite
-model is not currently committed to this repository. Do not confuse a
-model that is *downloaded to the phone* with AI inference performed by a
-remote server. For fully offline first installation, bundle a compatible
-`yolo11n.tflite` locally and change `OnDeviceObjectDetector.modelUrl`
-to its Flutter asset path.
+Object detection works entirely on the phone. Distance estimation requires
+Colab to remain running. The tunnel URL changes when the Colab runtime restarts.
 
-The native plugin is `ultralytics_yolo: 0.6.11`, currently subject to
-Ultralytics' **AGPL-3.0** terms; review licensing before distributing the
-app commercially.
+## Technical detail
 
-## Run the depth server in Google Colab
+- YOLO runs on **YUV420 camera-stream frames**, without `takePicture()`.
+- About once every 1.8 seconds (when a Colab request is not in flight), the
+  same camera frame is converted on a worker isolate into a 640px-or-smaller
+  upright JPEG. The sampled JPEG + normalized boxes are uploaded via
+  multipart `POST /estimate-depth` (`file`, `detections`).
+- The Colab notebook returns `calibrated_distance_m`. The app associates a
+  distance with a **matching class and overlapping box**, not just a name.
+  Readings are hidden when too old, or when a matching object disappears.
+- Long-press **Volume Up** to hear object names/directions; when a recent
+  Colab distance exists, speech includes it. Short Volume Up keeps the
+  supplied placeholder for room-number reading.
+- Bounding boxes are **yellow** for obstacle classes, **teal** for info
+  classes. The ZIP's 80-label COCO model has no dedicated `stairs` class.
+- Uploading the camera image over a temporary unauthenticated Cloudflare
+  tunnel is suitable for consented prototypes only.
 
-1. Open `Maya Alsuos update 10.ipynb` in Colab.
-2. Enable GPU runtime if available and run cells **0 to 14** in order.
-   Cells 15–18 are **optional ONNX export** and are not needed to serve
-   requests.
-3. Copy the **API PUBLIC URL** printed in cell 14, for example
-   `https://<temporary>.trycloudflare.com`.
-4. Visit `<PUBLIC URL>/health`. The JSON should include
-   `"yolo_in_colab": false` and a `depth_model` entry.
-5. In the Android app, paste **only the base URL**, not
-   `/estimate-depth` or `/health`. Tap **Start camera**.
+## Build
 
-Colab needs to remain running; the Cloudflare URL is temporary. The
-notebook resizes uploaded images so their longest dimension is 640 px,
-which can change distance estimates from Update 8 even with the same
-calibration. Re-measure real distances and calibrate before trusting any
-values.
-
-## Run the Android app
-
-From PowerShell in the repository:
+From your project root:
 
 ```powershell
-git switch main
 git pull --ff-only origin main
+flutter clean
 flutter pub get
 flutter analyze
 flutter test
 flutter run
 ```
 
-To test phone YOLO without Colab, leave the depth URL blank and press
-**Start camera**. The app does not send photos to Colab in that mode.
+The memory setting in `android/gradle.properties` remains 4 GB **maximum
+Gradle build heap on the computer**, not Android-phone RAM.
 
-Source files:
-- `lib/on_device_detector.dart`: on-phone YOLO11 model, bounding boxes,
-  detection matching and temporary distance attachment.
-- `lib/colab_depth_client.dart`: depth-only multipart HTTP contract.
-- `lib/detection_overlay.dart`: visual labels and boxes.
-- `lib/main.dart`: Flutter camera and request orchestration.
-- `Maya Alsuos update 10.ipynb`: only Depth Anything V2 AI on Colab.
-
-## Safety, privacy and limits
-
-- The current **0.444 calibration is experimental** and was not validated
-  for obstacle avoidance. This assistive prototype is **not a navigation
-  safety system**.
-- The camera preview is live, but YOLO predictions update on captured
-  photos; the app does **not** perform continuous per-frame tracking.
-  Bounding boxes can lag or differ from the preview's crop/FOV.
-- Distances update only as the Colab server responds; 8-second safeguards
-  prevent keeping stale distance labels indefinitely.
-- When connected to Colab, the app uploads camera JPEGs plus detected
-  labels/positions. The temporary Cloudflare tunnel has no authentication;
-  use only consented test scenes, not sensitive images.
-- The notebook includes an optional ONNX export for the **depth model**.
-  That does not make depth run on the phone.
-- Flutter, Android model downloading, frame-to-box alignment and actual
-  device speed require hands-on testing. No device build was executed by
-  the automated repository changes.
+The local YOLO runtime and camera stream need testing on the target Samsung
+phone. Depth values are experimental; they must not be used for safe
+navigation or obstacle avoidance without independent validation.

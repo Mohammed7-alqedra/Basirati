@@ -1,18 +1,21 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_tts/flutter_tts.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
-import 'colab_depth_client.dart';
-import 'detection_overlay.dart';
-import 'on_device_detector.dart';
+import 'detection/yolo_detector.dart';
+import 'depth/colab_depth_client.dart';
+import 'depth/frame_encoder.dart';
+import 'ui/overlay_painter.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   runApp(const BasiratiApp());
 }
 
@@ -21,358 +24,409 @@ class BasiratiApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Baseerte AI — Update 10',
+    return const MaterialApp(
+      title: 'Basirati AI',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData.dark(),
-      home: const NotebookCameraScreen(),
+      home: DetectionScreen(),
     );
   }
 }
 
-class NotebookCameraScreen extends StatefulWidget {
-  const NotebookCameraScreen({super.key});
+/// Adopted from basirati_for_det: local YOLO11 on the camera stream,
+/// voice controls, and object overlays. Only depth estimation uses Colab.
+class DetectionScreen extends StatefulWidget {
+  const DetectionScreen({super.key});
 
   @override
-  State<NotebookCameraScreen> createState() => _NotebookCameraScreenState();
+  State<DetectionScreen> createState() => _DetectionScreenState();
 }
 
-class _NotebookCameraScreenState extends State<NotebookCameraScreen> {
-  final _urlController = TextEditingController();
+class _DetectionScreenState extends State<DetectionScreen> {
+  static const _keys = MethodChannel('basirati/keys');
+  static const _preferenceKey = 'update10_colab_depth_url';
+
+  final _detector = YoloDetector();
+  final _tts = FlutterTts();
   final _http = http.Client();
-  final _detector = OnDeviceObjectDetector();
+  late final ColabDepthClient _depthClient = ColabDepthClient(_http);
 
-  CameraController? _camera;
-  Timer? _sampleTimer;
-  Timer? _staleTimer;
-  String? _colabUrl;
-  List<LocalDetection> _detections = const [];
-  String? _visibilityWarning;
-  String _status = 'YOLO11 runs on the phone; distances run in Colab.';
-  bool _connecting = false;
-  bool _capturing = false;
-  bool _depthInFlight = false;
+  CameraController? _controller;
+  List<Detection> _results = const [];
+  List<DepthEstimate> _distances = const [];
+  bool _busy = false;
+  bool _uploading = false;
+  bool _modelReady = false;
   int _session = 0;
+  DateTime _lastUpload = DateTime.fromMillisecondsSinceEpoch(0);
+  String _status = 'Starting camera…';
+  String? _colabUrl;
+  String? _colabWarning;
 
-  Future<void> _connect() async {
-    if (_connecting || _camera != null) {
-      return;
-    }
+  @override
+  void initState() {
+    super.initState();
+    unawaited(WakelockPlus.enable().catchError((Object _) {}));
+    _keys.setMethodCallHandler(_onKey);
+    unawaited(_start());
+    unawaited(_restoreColabUrl());
+  }
 
-    final entered = _urlController.text.trim()
-        .replaceAll(RegExp(r'/+$'), '');
-    final base = entered.isEmpty ? null : entered;
-    if (base != null) {
-      final uri = Uri.tryParse(base);
-      if (uri == null || uri.scheme != 'https' || uri.host.isEmpty) {
-        setState(() => _status = 'Enter a valid HTTPS Colab URL, '
-            'or leave it empty for object detection only.');
-        return;
-      }
-    }
-
-    setState(() {
-      _connecting = true;
-      _status = 'Loading YOLO11 Nano on the Android phone. '
-          'First run downloads the model once…';
-    });
-
-    CameraController? newCamera;
+  Future<void> _restoreColabUrl() async {
     try {
-      // This is ON-DEVICE YOLO inference, never a Colab YOLO request.
-      await _detector.load();
-
-      if (base != null) {
-        setState(() => _status = 'Checking the Update 10 Colab depth API…');
-        final response = await _http.get(Uri.parse('$base/health'))
-            .timeout(const Duration(seconds: 12));
-        if (response.statusCode != 200) {
-          throw StateError('Colab /health returned HTTP '
-              '${response.statusCode}');
-        }
-        final body = jsonDecode(response.body);
-        if (body is! Map || body['depth_model'] == null ||
-            body['yolo_in_colab'] != false) {
-          throw StateError('This is not the Update 10 depth-only API. '
-              'Run Maya Alsuos update 10.ipynb instead of Update 8.');
-        }
-      }
-
-      final cameras = await availableCameras();
-      if (cameras.isEmpty) {
-        throw StateError('No camera available');
-      }
-      final rear = cameras.firstWhere(
-        (c) => c.lensDirection == CameraLensDirection.back,
-        orElse: () => cameras.first,
-      );
-      newCamera = CameraController(
-        rear,
-        ResolutionPreset.medium,
-        enableAudio: false,
-      );
-      await newCamera.initialize();
-      if (!mounted) {
-        await newCamera.dispose();
-        return;
-      }
-
-      final session = ++_session;
-      setState(() {
-        _camera = newCamera;
-        _colabUrl = base;
-        _detections = const [];
-        _visibilityWarning = null;
-        _status = base == null
-            ? 'Phone YOLO11 active. Offline object detection only.'
-            : 'Phone YOLO11 active; Colab provides distances.';
-      });
-      _sampleTimer?.cancel();
-      _sampleTimer = Timer.periodic(
-        const Duration(milliseconds: 1500),
-        (_) => unawaited(_samplePhonePhoto(session)),
-      );
-      unawaited(_samplePhonePhoto(session));
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getString(_preferenceKey);
+      if (saved == null || saved.isEmpty || !mounted) return;
+      await _applyColabUrl(saved, save: false);
     } catch (error) {
-      if (newCamera != null && !identical(newCamera, _camera)) {
-        await newCamera.dispose();
-      }
       if (mounted) {
-        setState(() => _status = 'Connection error: $error');
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _connecting = false);
+        setState(() => _colabWarning = 'Colab URL not restored: $error');
       }
     }
   }
 
-  Future<void> _samplePhonePhoto(int session) async {
-    final camera = _camera;
-    if (_capturing || !mounted || session != _session ||
-        camera == null || !camera.value.isInitialized ||
-        camera.value.isTakingPicture) {
-      return;
-    }
-    _capturing = true;
+  Future<void> _start() async {
+    CameraController? pending;
     try {
-      // Keep the original still-photo capture. The exact same JPEG goes to
-      // the phone's YOLO and Colab's depth API (no YUV conversion).
-      final photo = await camera.takePicture();
-      late final Uint8List jpeg;
-      try {
-        jpeg = await photo.readAsBytes();
-      } finally {
-        try {
-          await File(photo.path).delete();
-        } catch (_) {}
+      await _detector.load();
+      _modelReady = true;
+      await _tts.setLanguage('en-US');
+      final cameras = await availableCameras();
+      if (cameras.isEmpty) {
+        throw StateError('No camera found');
       }
-      if (!mounted || session != _session) {
+      final back = cameras.firstWhere(
+        (camera) => camera.lensDirection == CameraLensDirection.back,
+        orElse: () => cameras.first,
+      );
+      pending = CameraController(
+        back,
+        ResolutionPreset.medium,
+        enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.yuv420,
+      );
+      await pending.initialize();
+      if (!mounted) {
+        await pending.dispose();
         return;
       }
-
-      final fresh = await _detector.detect(jpeg);
-      if (!mounted || session != _session) {
-        return;
-      }
-
-      final now = DateTime.now();
-      final updated = keepRecentDistances(fresh, _detections, now);
-      _staleTimer?.cancel();
       setState(() {
-        _detections = updated;
-        _status = _colabUrl == null
-            ? 'Phone YOLO11: ${fresh.length} objects (offline).'
-            : 'Phone YOLO11: ${fresh.length} objects. '
-              'Distance estimates update from Colab.';
+        _controller = pending;
+        _status = 'Phone YOLO11 started. Local detection active.';
       });
+      await pending.startImageStream(_onFrame);
+      unawaited(_speak('Started'));
+    } catch (error) {
+      if (pending != null && !identical(pending, _controller)) {
+        await pending.dispose();
+      }
+      if (mounted) setState(() => _status = 'Camera/YOLO error: $error');
+    }
+  }
 
-      // A failed or paused capture must not leave stale boxes forever.
-      _staleTimer = Timer(const Duration(seconds: 8), () {
-        if (!mounted || session != _session) {
-          return;
-        }
-        setState(() {
-          _detections = const [];
-          _status = 'No fresh phone camera detection; boxes hidden.';
-        });
+  void _onFrame(CameraImage image) {
+    final camera = _controller;
+    if (_busy || camera == null || !mounted) return;
+    _busy = true;
+    final start = DateTime.now();
+    try {
+      // This detector is from the uploaded ZIP, not Ultralytics' other plugin.
+      final results = _detector.detect(
+        image,
+        camera.description.sensorOrientation,
+      );
+      final durationMs = DateTime.now().difference(start).inMilliseconds;
+      if (!mounted) return;
+      setState(() {
+        _results = results;
+        _status = '${results.length} objects · $durationMs ms per YOLO frame'
+            ' · ${_colabUrl == null ? 'Colab not connected' : 'Colab connected'}';
       });
 
       final url = _colabUrl;
-      if (url != null && !_depthInFlight) {
-        unawaited(_requestDepth(
-          session: session,
-          baseUrl: url,
-          jpeg: jpeg,
-          sent: fresh,
+      final now = DateTime.now();
+      if (url != null && results.isNotEmpty && !_uploading &&
+          now.difference(_lastUpload) >= const Duration(milliseconds: 1800)) {
+        _uploading = true;
+        _lastUpload = now;
+        final session = _session;
+        // jpegFromCameraFrame copies all planes synchronously, then encodes
+        // in a worker isolate. It never calls takePicture during streaming.
+        unawaited(_requestDistances(
+          image,
+          camera.description.sensorOrientation,
+          List<Detection>.unmodifiable(results),
+          url,
+          session,
+          now,
         ));
       }
     } catch (error) {
-      if (mounted && session == _session) {
-        setState(() => _status = 'On-device camera/YOLO error: $error');
-      }
+      if (mounted) setState(() => _status = 'YOLO detection error: $error');
     } finally {
-      _capturing = false;
+      _busy = false;
     }
   }
 
-  Future<void> _requestDepth({
-    required int session,
-    required String baseUrl,
-    required Uint8List jpeg,
-    required List<LocalDetection> sent,
-  }) async {
-    if (_depthInFlight) {
-      return;
-    }
-    _depthInFlight = true;
-    final started = DateTime.now();
+  Future<void> _requestDistances(
+    CameraImage frame,
+    int rotation,
+    List<Detection> sent,
+    String baseUrl,
+    int session,
+    DateTime capturedAt,
+  ) async {
     try {
-      final result = await ColabDepthClient(_http).estimate(
+      final jpeg = await jpegFromCameraFrame(frame, rotation);
+      if (!mounted || session != _session || _colabUrl != baseUrl) return;
+      final distances = await _depthClient.estimate(
         baseUrl: baseUrl,
-        jpegBytes: jpeg,
+        jpeg: jpeg,
         detections: sent,
       );
-      if (!mounted || session != _session ||
-          DateTime.now().difference(started) >
-              const Duration(seconds: 8)) {
+      if (!mounted || session != _session || _colabUrl != baseUrl) return;
+      // Don't apply old measurements to a live, moving camera picture.
+      if (DateTime.now().difference(capturedAt) >
+          const Duration(seconds: 6)) {
         return;
       }
-
-      final now = DateTime.now();
-      final enriched = attachDepthResults(
-        _detections,
-        sent,
-        result['detections'],
-        now,
-      );
-      final visibility = result['camera_visibility'];
-      final warning = visibility is Map
-          ? visibility['warning_message']?.toString()
-          : null;
-
       setState(() {
-        _detections = enriched;
-        _visibilityWarning = warning;
+        _distances = distances;
+        _colabWarning = null;
       });
     } catch (error) {
-      if (mounted && session == _session) {
-        setState(() {
-          _visibilityWarning = 'Depth server unavailable; '
-              'YOLO object detection continues on the phone.';
-        });
+      if (mounted && session == _session && _colabUrl == baseUrl) {
+        setState(() => _colabWarning = 'Distance server: $error');
       }
     } finally {
-      _depthInFlight = false;
+      _uploading = false;
     }
   }
 
-  Future<void> _disconnect() async {
-    ++_session;
-    _sampleTimer?.cancel();
-    _sampleTimer = null;
-    _staleTimer?.cancel();
-    _staleTimer = null;
-    final previous = _camera;
-    if (mounted) {
-      setState(() {
-        _camera = null;
-        _colabUrl = null;
-        _detections = const [];
-        _visibilityWarning = null;
-        _status = 'Disconnected. Ready to start again.';
-      });
+  Future<void> _applyColabUrl(String value, {bool save = true}) async {
+    final url = value.trim().replaceFirst(RegExp(r'/+$'), '');
+    if (url.isEmpty) {
+      ++_session;
+      if (mounted) {
+        setState(() {
+          _colabUrl = null;
+          _colabWarning = null;
+          _distances = const [];
+        });
+      }
+      if (save) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove(_preferenceKey);
+      }
+      return;
     }
-    await previous?.dispose();
+    final uri = Uri.tryParse(url);
+    if (uri == null || uri.scheme != 'https' || uri.host.isEmpty ||
+        uri.path != '') {
+      throw const FormatException('Paste only the HTTPS base URL from Colab.');
+    }
+    await _depthClient.checkHealth(url);
+    if (!mounted) return;
+    ++_session;
+    setState(() {
+      _colabUrl = url;
+      _colabWarning = null;
+      _distances = const [];
+    });
+    if (save) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_preferenceKey, url);
+    }
+  }
+
+  Future<void> _showColabSettings() async {
+    final input = TextEditingController(text: _colabUrl ?? '');
+    String? errorMessage;
+    var connecting = false;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Connect distance to Colab'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('YOLO detection runs on the phone. Paste the '
+                  'Update 10 API PUBLIC URL for distance estimates.'),
+              const SizedBox(height: 12),
+              TextField(
+                controller: input,
+                keyboardType: TextInputType.url,
+                decoration: const InputDecoration(
+                  labelText: 'Colab HTTPS URL',
+                  hintText: 'https://example.trycloudflare.com',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              if (errorMessage != null)
+                Text(errorMessage!, style: const TextStyle(color: Colors.red)),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: connecting ? null : () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: connecting ? null : () async {
+                setDialogState(() => connecting = true);
+                try {
+                  await _applyColabUrl('');
+                  if (dialogContext.mounted) Navigator.pop(dialogContext);
+                } catch (error) {
+                  setDialogState(() => errorMessage = error.toString());
+                } finally {
+                  if (dialogContext.mounted) {
+                    setDialogState(() => connecting = false);
+                  }
+                }
+              },
+              child: const Text('Disconnect'),
+            ),
+            FilledButton(
+              onPressed: connecting ? null : () async {
+                setDialogState(() => connecting = true);
+                try {
+                  await _applyColabUrl(input.text);
+                  if (dialogContext.mounted) Navigator.pop(dialogContext);
+                } catch (error) {
+                  if (dialogContext.mounted) {
+                    setDialogState(() => errorMessage = error.toString());
+                  }
+                } finally {
+                  if (dialogContext.mounted) {
+                    setDialogState(() => connecting = false);
+                  }
+                }
+              },
+              child: Text(connecting ? 'Connecting…' : 'Connect'),
+            ),
+          ],
+        ),
+      ),
+    );
+    input.dispose();
+  }
+
+  Future<void> _onKey(MethodCall call) async {
+    if (call.method == 'volumeUpLong') {
+      _describeObjects();
+    } else if (call.method == 'volumeUpShort') {
+      unawaited(_speak('Room number reading is not ready yet'));
+    }
+  }
+
+  /// Original ZIP voice feature, enhanced with distances when Colab returns.
+  void _describeObjects() {
+    final results = _results;
+    if (results.isEmpty) {
+      unawaited(_speak("I don't see any objects"));
+      return;
+    }
+    final groups = <String, int>{};
+    for (final d in results) {
+      final estimate = estimateForObject(d, _distances, DateTime.now());
+      final meters = estimate == null ? '' :
+          ', about ${estimate.meters.toStringAsFixed(1)} meters';
+      final key = '${d.label}|${d.direction}$meters';
+      groups[key] = (groups[key] ?? 0) + 1;
+    }
+    final phrases = groups.entries.map((entry) {
+      final parts = entry.key.split('|');
+      final label = parts[0];
+      final directionAndDistance = parts[1];
+      final plural = label == 'person' ? 'people' : '${label}s';
+      final name = entry.value > 1 ? '${entry.value} $plural' : label;
+      final where = directionAndDistance.startsWith('left')
+          ? 'on your left'
+          : directionAndDistance.startsWith('right')
+              ? 'on your right'
+              : 'ahead';
+      final comma = directionAndDistance.indexOf(',');
+      final distance = comma >= 0 ? directionAndDistance.substring(comma) : '';
+      return '$name $where$distance';
+    });
+    unawaited(_speak(phrases.join(', ')));
+  }
+
+  Future<void> _speak(String text) async {
+    await _tts.stop();
+    await _tts.speak(text);
   }
 
   @override
   void dispose() {
     ++_session;
-    _sampleTimer?.cancel();
-    _staleTimer?.cancel();
-    _http.close();
-    _urlController.dispose();
-    final camera = _camera;
+    _keys.setMethodCallHandler(null);
+    final camera = _controller;
     if (camera != null) {
-      unawaited(camera.dispose());
+      unawaited(() async {
+        if (camera.value.isStreamingImages) {
+          await camera.stopImageStream();
+        }
+        await camera.dispose();
+        if (_modelReady) _detector.close();
+      }());
+    } else if (_modelReady) {
+      _detector.close();
     }
-    unawaited(_detector.dispose());
+    _http.close();
+    unawaited(_tts.stop());
+    unawaited(WakelockPlus.disable().catchError((Object _) {}));
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final camera = _camera;
+    final camera = _controller;
     return Scaffold(
-      appBar: AppBar(title: const Text('Baseerte AI — Update 10')),
+      backgroundColor: Colors.black,
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              if (camera == null) ...[
-                const Text(
-                  'Run "Maya Alsuos update 10.ipynb" in Google Colab '
-                  'and paste its HTTPS API URL. Leave blank to use '
-                  'offline YOLO object detection without distances.',
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _urlController,
-                  keyboardType: TextInputType.url,
-                  autocorrect: false,
-                  decoration: const InputDecoration(
-                    labelText: 'Update 10 Colab depth URL (optional)',
-                    hintText: 'https://example.trycloudflare.com',
-                    border: OutlineInputBorder(),
+        child: Stack(
+          children: [
+            if (camera != null && camera.value.isInitialized)
+              Center(
+                child: AspectRatio(
+                  aspectRatio: 1 / camera.value.aspectRatio,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      CameraPreview(camera),
+                      CustomPaint(painter: OverlayPainter(_results, _distances)),
+                    ],
                   ),
                 ),
-                const SizedBox(height: 12),
-                FilledButton(
-                  onPressed: _connecting ? null : _connect,
-                  child: Text(_connecting
-                      ? 'Starting…' : 'Start camera'),
-                ),
-                const SizedBox(height: 8),
-                const Text('First launch downloads the YOLO11 Nano '
-                    'TFLite model. After that YOLO runs on the phone.'),
-              ] else ...[
-                Expanded(
-                  child: LiveCameraWithDetections(
-                    preview: CameraPreview(camera),
-                    previewAspectRatio:
-                        MediaQuery.orientationOf(context) ==
-                                Orientation.portrait
-                            ? 1 / camera.value.aspectRatio
-                            : camera.value.aspectRatio,
-                    detections: _detections,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                if (_visibilityWarning != null)
-                  Text(
-                    _visibilityWarning!,
-                    style: const TextStyle(color: Colors.orangeAccent),
-                  ),
-                OutlinedButton(
-                  onPressed: _disconnect,
-                  child: const Text('Disconnect'),
-                ),
-              ],
-              const SizedBox(height: 8),
-              Text(_status),
-              const SizedBox(height: 4),
-              const Text(
-                'YOLO detections run locally. Photos and object boxes are '
-                'sent to Colab only when a depth URL is connected. '
-                'Distance and near-object flags are experimental; '
-                'do not use for safe navigation.',
-                style: TextStyle(fontSize: 12),
               ),
-            ],
-          ),
+            Positioned(
+              left: 0,
+              right: 0,
+              top: 0,
+              child: Container(
+                color: const Color(0xCC0F1B3D),
+                padding: const EdgeInsets.fromLTRB(12, 8, 50, 8),
+                child: ExcludeSemantics(
+                  child: Text(
+                    _colabWarning == null ? _status : '$_status\n$_colabWarning',
+                    maxLines: 3,
+                    style: const TextStyle(color: Colors.white, fontSize: 14),
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              top: 0,
+              right: 0,
+              child: IconButton(
+                onPressed: _showColabSettings,
+                icon: const Icon(Icons.settings, color: Colors.white),
+                tooltip: 'Connect Google Colab distance',
+              ),
+            ),
+          ],
         ),
       ),
     );
