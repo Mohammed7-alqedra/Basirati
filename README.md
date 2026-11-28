@@ -19,16 +19,9 @@ The on-device detector in this branch comes from the uploaded
 The supplied model is **10,688,099 bytes** with SHA-256:
 `eb9b233b9e339fb5ef83926be5c70e0f7fab286c0b30979617d8622dadc7b157`.
 
-The original model binary was too large for a single GitHub connector upload.
-To preserve it **exactly**, the GitHub repository stores 28 base64 text assets
-in `assets/model_segments/`. On application startup, `YoloDetector.load()`
-reassembles the bytes **in memory** and passes them to
-`tflite_flutter.Interpreter.fromBuffer`. This is still a **local, on-device**
-YOLO model and requires **no internet or Colab** to detect objects.
-
-You do **not** have to copy the model manually after `git pull`.
-The integration ZIP also contains the original standalone
-`assets/yolo11n.tflite` for verification or use outside this build.
+The original binary from the supplied ZIP is bundled directly as
+`assets/yolo11n.tflite` and loaded via `Interpreter.fromAsset`.
+No model download or Base64 reconstruction is needed.
 
 The model uses float32 input `[1,3,320,320]` and output `[1,84,2100]`.
 

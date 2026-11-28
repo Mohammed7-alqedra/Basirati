@@ -25,5 +25,5 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
-    - assets/model_segments/
+    - assets/yolo11n.tflite
     - assets/labels.txt

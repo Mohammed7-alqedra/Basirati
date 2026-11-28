@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
@@ -78,21 +77,8 @@ class YoloDetector {
 
   Future<void> load() async {
     final options = InterpreterOptions()..threads = 4;
-    // Exact 10.7 MB model supplied in basirati_for_det(1).zip.
-    // GitHub stores its base64 segments as ordinary assets because the
-    // connector cannot upload the binary in a single request. Only model
-    // *loading* differs from the teammate's original detector implementation.
-    final modelParts = BytesBuilder(copy: false);
-    for (var i = 0; i < 28; i++) {
-      final name = 'part_${i.toString().padLeft(3, '0')}.txt';
-      final text = await rootBundle.loadString('assets/model_segments/$name');
-      modelParts.add(base64Decode(text.trim()));
-    }
-    final modelBytes = modelParts.takeBytes();
-    if (modelBytes.length != 10688099) {
-      throw StateError('Local YOLO11 model asset is incomplete.');
-    }
-    _interpreter = Interpreter.fromBuffer(modelBytes, options: options);
+    _interpreter =
+        await Interpreter.fromAsset('assets/yolo11n.tflite', options: options);
 
     final labelsText = await rootBundle.loadString('assets/labels.txt');
     _labels = labelsText
