@@ -239,77 +239,14 @@ class _DetectionScreenState extends State<DetectionScreen> {
   }
 
   Future<void> _showColabSettings() async {
-    final input = TextEditingController(text: _colabUrl ?? '');
-    String? errorMessage;
-    var connecting = false;
     await showDialog<void>(
       context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Connect distance to Colab'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text('YOLO detection runs on the phone. Paste the '
-                  'Update 10 API PUBLIC URL for distance estimates.'),
-              const SizedBox(height: 12),
-              TextField(
-                controller: input,
-                keyboardType: TextInputType.url,
-                decoration: const InputDecoration(
-                  labelText: 'Colab HTTPS URL',
-                  hintText: 'https://example.trycloudflare.com',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              if (errorMessage != null)
-                Text(errorMessage!, style: const TextStyle(color: Colors.red)),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: connecting ? null : () => Navigator.pop(dialogContext),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              onPressed: connecting ? null : () async {
-                setDialogState(() => connecting = true);
-                try {
-                  await _applyColabUrl('');
-                  if (dialogContext.mounted) Navigator.pop(dialogContext);
-                } catch (error) {
-                  setDialogState(() => errorMessage = error.toString());
-                } finally {
-                  if (dialogContext.mounted) {
-                    setDialogState(() => connecting = false);
-                  }
-                }
-              },
-              child: const Text('Disconnect'),
-            ),
-            FilledButton(
-              onPressed: connecting ? null : () async {
-                setDialogState(() => connecting = true);
-                try {
-                  await _applyColabUrl(input.text);
-                  if (dialogContext.mounted) Navigator.pop(dialogContext);
-                } catch (error) {
-                  if (dialogContext.mounted) {
-                    setDialogState(() => errorMessage = error.toString());
-                  }
-                } finally {
-                  if (dialogContext.mounted) {
-                    setDialogState(() => connecting = false);
-                  }
-                }
-              },
-              child: Text(connecting ? 'Connecting…' : 'Connect'),
-            ),
-          ],
-        ),
+      barrierDismissible: false,
+      builder: (_) => _ColabSettingsDialog(
+        initialUrl: _colabUrl ?? '',
+        applyUrl: _applyColabUrl,
       ),
     );
-    input.dispose();
   }
 
   Future<void> _onKey(MethodCall call) async {
@@ -428,6 +365,104 @@ class _DetectionScreenState extends State<DetectionScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Owns its controller until the dialog is actually unmounted, including
+/// the route's closing animation.
+class _ColabSettingsDialog extends StatefulWidget {
+  const _ColabSettingsDialog({
+    required this.initialUrl,
+    required this.applyUrl,
+  });
+
+  final String initialUrl;
+  final Future<void> Function(String) applyUrl;
+
+  @override
+  State<_ColabSettingsDialog> createState() => _ColabSettingsDialogState();
+}
+
+class _ColabSettingsDialogState extends State<_ColabSettingsDialog> {
+  late final TextEditingController _input;
+  bool _connecting = false;
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    _input = TextEditingController(text: widget.initialUrl);
+  }
+
+  @override
+  void dispose() {
+    _input.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit(String url) async {
+    if (_connecting) return;
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _connecting = true;
+      _errorMessage = null;
+    });
+    try {
+      await widget.applyUrl(url);
+      if (!mounted) return;
+      Navigator.of(context).pop();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _connecting = false;
+        _errorMessage = error.toString();
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+      canPop: !_connecting,
+      child: AlertDialog(
+        title: const Text('Connect distance to Colab'),
+        scrollable: true,
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('YOLO detection runs on the phone. Paste the '
+                'Update 10 API PUBLIC URL for distance estimates.'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _input,
+              enabled: !_connecting,
+              keyboardType: TextInputType.url,
+              decoration: const InputDecoration(
+                labelText: 'Colab HTTPS URL',
+                hintText: 'https://example.trycloudflare.com',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            if (_errorMessage != null)
+              Text(_errorMessage!, style: const TextStyle(color: Colors.red)),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: _connecting ? null : () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: _connecting ? null : () => _submit(''),
+            child: const Text('Disconnect'),
+          ),
+          FilledButton(
+            onPressed: _connecting ? null : () => _submit(_input.text),
+            child: Text(_connecting ? 'Connecting…' : 'Connect'),
+          ),
+        ],
       ),
     );
   }
